@@ -2,12 +2,13 @@
  * File Name   : flash_sfc.h
  * Description : TCON Serial Flash Controller (SFC) IP Driver Header
  * Target Core : ARM Cortex-M0 (ARMv6-M)
- * Compiler    : ARMCC / C90 Compatible
+ * Compiler    : ARMCC / ARMCLANG / GCC (C99 Compatible)
  ******************************************************************************/
 
 #ifndef __FLASH_SFC_H__
 #define __FLASH_SFC_H__
 
+#include <stdbool.h>
 #include "flash.h"
 
 #ifdef __cplusplus
@@ -92,12 +93,12 @@ void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, uint8_t addr_bytes);
  * @param dst_buf: Destination buffer (must be aligned to unit size).
  * @param count: Number of units to read.
  * @param unit: FLASH_READ_UNIT (BYTE=1, HALFWORD=2, WORD=4, or DEFAULT=0 for WORD).
- * @param use_crc: 1 to enable hardware CRC calculation.
+ * @param use_crc: true to enable hardware CRC calculation.
  * @param p_crc_out: Pointer to receive 32-bit CRC result (can be NULL).
  * @return FLASH_OK on success, or negative error code.
  */
 int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
-                      FLASH_READ_UNIT unit, uint8_t use_crc, uint32_t *p_crc_out);
+                      FLASH_READ_UNIT unit, bool use_crc, uint32_t *p_crc_out);
 
 /**
  * @brief Get configured SFC transfer page size.

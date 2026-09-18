@@ -2,7 +2,7 @@
  * File Name   : flash_spi.h
  * Description : Low-Level SPI Controller Hardware Interface Header
  * Target Core : ARM Cortex-M0 (ARMv6-M)
- * Compiler    : ARMCC / C90 Compatible
+ * Compiler    : ARMCC / ARMCLANG / GCC (C99 Compatible)
  ******************************************************************************/
 
 #ifndef __FLASH_SPI_H__

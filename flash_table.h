@@ -2,7 +2,7 @@
  * File Name   : flash_table.h
  * Description : Flash Device Profiles and Model Lookup Table Header
  * Target Core : ARM Cortex-M0 (ARMv6-M)
- * Compiler    : ARMCC / C90 Compatible
+ * Compiler    : ARMCC / ARMCLANG / GCC (C99 Compatible)
  ******************************************************************************/
 
 #ifndef __FLASH_TABLE_H__

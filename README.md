@@ -18,8 +18,9 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 - **다양한 읽기 단위 지원 (Read Access Units - Byte / Halfword / Word)**:
   - `FLASH_READ_UNIT_BYTE` (8-bit), `FLASH_READ_UNIT_HALFWORD` (16-bit), `FLASH_READ_UNIT_WORD` (32-bit, 기본값) 지원.
   - 기본값(0 지정 시)은 32-bit Word 단위로 자동 해석되어 4바이트 정렬 검사 및 SFC ACCESS_UNIT 설정 수행.
-- **Cortex-M0 (`arm-cm0`) & `armcc` 호환**:
-  - Strict C90 표준 준수.
+- **Cortex-M0 (`arm-cm0`) & C99 표준 호환**:
+  - 현대적 C99 표준 준수 (`<stdbool.h>`, 지정 초기화자 `Designated Initializers`, 루프 및 로컬 변수 스코프 국소화, `static inline` 헬퍼 함수).
+  - ARM Compiler 5 (`armcc --c99`), ARM Compiler 6 (`armclang`), GCC (`gcc -std=c99`) 완벽 호환.
   - Word(4-Byte)/Halfword(2-Byte) 단위별 정렬 검사로 Cortex-M0 Unaligned Access HardFault 원천 차단.
 - **256-Byte Page Boundary 자동 분할**:
   - 페이지 경계를 걸치는 Program 요청 시 256바이트 단위로 자동 분할 전송.
@@ -45,27 +46,30 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 ├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
 ├── flash.c          # 드라이버 코어 엔진 (Init, Read, Program, Erase, Die Select 등)
 ├── flash_table.h    # Flash 모델 검색 인터페이스 및 테이블 선언
-├── flash_table.c    # 7종 Flash 메모리 ROM 테이블 (const FLASH_INFO)
+├── flash_table.c    # 7종 Flash 메모리 ROM 테이블 (C99 Designated Initializer 적용)
 ├── flash_sfc.h      # TCON SFC IP 하드웨어 레지스터 맵(ACCESS_UNIT 포함) 및 DMA API 헤더
 ├── flash_sfc.c      # TCON SFC IP 드라이버 구현 (Single/Quad 모드 전환, 단위별 2K/4K DMA Read)
 ├── flash_spi.h      # Low-Level SPI 컨트롤러 인터페이스 헤더
 ├── flash_spi.c      # Low-Level SPI 컨트롤러 드라이버 및 HW 추상화 스텁
-└── test_flash.c     # 전 기능 시뮬레이션 및 C90 표준 검증 테스트 슈트
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트
 ```
 
 ---
 
 ## 🚀 빌드 및 검증 (Build & Test)
 
-GCC (MinGW / LLVM) 또는 ARMCC를 통해 C90 엄격 모드로 빌드하고 테스트를 실행할 수 있습니다:
+GCC (MinGW / LLVM) 또는 ARM Compiler (ARMCC/ARMCLANG)를 통해 C99 표준으로 빌드하고 테스트를 실행할 수 있습니다:
 
 ```bash
-# C90 엄격 모드로 컴파일
-gcc -std=c90 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c test_flash.c -o test_flash.exe
+# GCC 환경에서 C99 엄격 모드로 컴파일
+gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c test_flash.c -o test_flash.exe
 
 # 검증 테스트 실행
 ./test_flash.exe
 ```
+
+> **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
+> **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
 ### 테스트 통과 항목:
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭

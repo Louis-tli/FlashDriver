@@ -2,7 +2,7 @@
  * File Name   : flash_sfc.c
  * Description : TCON Serial Flash Controller (SFC) IP Driver Implementation
  * Target Core : ARM Cortex-M0 (ARMv6-M)
- * Compiler    : ARMCC / C90 Compatible
+ * Compiler    : ARMCC / ARMCLANG / GCC (C99 Compatible)
  ******************************************************************************/
 
 #include "flash_sfc.h"
@@ -70,17 +70,10 @@ void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, uint8_t addr_bytes)
 }
 
 int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
-                      FLASH_READ_UNIT unit, uint8_t use_crc, uint32_t *p_crc_out)
+                      FLASH_READ_UNIT unit, bool use_crc, uint32_t *p_crc_out)
 {
-    uint8_t *p_dst;
-    uint32_t remaining;
-    uint32_t current_addr;
-    uint32_t chunk_len;
-    uint32_t timeout;
-    uint8_t effective_unit;
-    uint32_t total_bytes;
-
     /* Default access unit is WORD (32-bit / 4 bytes) */
+    uint8_t effective_unit;
     if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD))
     {
         effective_unit = 4U;
@@ -104,19 +97,10 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
     }
 
     /* Cortex-M0 strictly requires aligned memory access according to transfer unit */
-    if (effective_unit == 4U)
+    if (!Flash_IsAligned((uintptr_t)dst_buf, (uint32_t)effective_unit) ||
+        !Flash_IsAligned(flash_addr, (uint32_t)effective_unit))
     {
-        if ((((uint32_t)(uintptr_t)dst_buf & 3U) != 0U) || ((flash_addr & 3U) != 0U))
-        {
-            return FLASH_ERR_ALIGNMENT;
-        }
-    }
-    else if (effective_unit == 2U)
-    {
-        if ((((uint32_t)(uintptr_t)dst_buf & 1U) != 0U) || ((flash_addr & 1U) != 0U))
-        {
-            return FLASH_ERR_ALIGNMENT;
-        }
+        return FLASH_ERR_ALIGNMENT;
     }
 
     if (g_p_sfc_regs == NULL)
@@ -124,24 +108,24 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         return FLASH_ERR_HARDWARE;
     }
 
-    total_bytes = count * (uint32_t)effective_unit;
+    const uint32_t total_bytes = count * (uint32_t)effective_unit;
     g_p_sfc_regs->ACCESS_UNIT = (uint32_t)effective_unit;
 
     /* Initialize hardware CRC engine if requested */
-    if (use_crc != 0U)
+    if (use_crc)
     {
         g_p_sfc_regs->CRC_CTRL = SFC_CRC_CTRL_RESET | SFC_CRC_CTRL_ENABLE;
     }
 
-    p_dst = (uint8_t *)dst_buf;
-    remaining = total_bytes;
-    current_addr = flash_addr;
+    uint8_t *p_dst = (uint8_t *)dst_buf;
+    uint32_t remaining = total_bytes;
+    uint32_t current_addr = flash_addr;
 
     /* Loop through transfers split by SFC page size (2KB or 4KB) */
     while (remaining > 0U)
     {
-        chunk_len = (remaining > s_sfc_transfer_page_size) ?
-                    (uint32_t)s_sfc_transfer_page_size : remaining;
+        const uint32_t chunk_len = (remaining > s_sfc_transfer_page_size) ?
+                                   (uint32_t)s_sfc_transfer_page_size : remaining;
 
         g_p_sfc_regs->DMA_SRC = current_addr;
         g_p_sfc_regs->DMA_DST = (uint32_t)(uintptr_t)p_dst;
@@ -151,7 +135,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         g_p_sfc_regs->CTRL |= SFC_CTRL_DMA_START;
 
         /* Wait for DMA transfer completion */
-        timeout = 500000U;
+        uint32_t timeout = 500000U;
         while ((g_p_sfc_regs->STATUS & SFC_STATUS_DMA_DONE) == 0U)
         {
             if ((g_p_sfc_regs->STATUS & SFC_STATUS_ERROR) != 0U)
@@ -181,7 +165,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
     }
 
     /* Fetch CRC result if requested */
-    if ((use_crc != 0U) && (p_crc_out != NULL))
+    if (use_crc && (p_crc_out != NULL))
     {
         *p_crc_out = g_p_sfc_regs->CRC_RES;
     }

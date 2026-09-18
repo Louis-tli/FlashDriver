@@ -1,8 +1,8 @@
 /******************************************************************************
  * File Name   : flash.h
- * Description : Generic SPI NOR Flash Driver Header for ARM Cortex-M0 / armcc
+ * Description : Generic SPI NOR Flash Driver Header for ARM Cortex-M0
  * Target Core : ARM Cortex-M0 (ARMv6-M)
- * Compiler    : ARMCC (ARM Compiler 5 / RealView) / C90 Compatible
+ * Compiler    : ARMCC (ARM Compiler 5) / ARMCLANG / GCC (C99 Compliant)
  ******************************************************************************/
 
 #ifndef __FLASH_H__
@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -216,14 +217,22 @@ typedef struct
     const FLASH_INFO   *info;               /* Pointer to active flash model in ROM */
     FLASH_STATE         state;              /* Current driver state */
     uint8_t             current_die;        /* Currently selected die index */
-    uint8_t             qe_enabled;         /* 1 if QE is verified enabled */
+    bool                qe_enabled;         /* True if QE is verified enabled */
     uint16_t            sfc_page_size;      /* SFC DMA page size: 2048 or 4096 */
 } FLASH_HANDLE;
 
 /******************************************************************************
- * Global Handle Access
+ * Global Handle Access & Inline Helpers
  ******************************************************************************/
 extern FLASH_HANDLE g_flash_handle;
+
+/**
+ * @brief Check if address/pointer is aligned to the given byte boundary.
+ */
+static inline bool Flash_IsAligned(uintptr_t val, uint32_t alignment_bytes)
+{
+    return ((val & (alignment_bytes - 1U)) == 0U);
+}
 
 /******************************************************************************
  * Public Driver APIs

@@ -2,7 +2,7 @@
  * File Name   : flash_spi.c
  * Description : Low-Level SPI Controller Hardware Interface Implementation
  * Target Core : ARM Cortex-M0 (ARMv6-M)
- * Compiler    : ARMCC / C90 Compatible
+ * Compiler    : ARMCC / ARMCLANG / GCC (C99 Compatible)
  ******************************************************************************/
 
 #include "flash_spi.h"
@@ -70,8 +70,7 @@ void Flash_SPI_SendAddr(uint32_t addr, uint8_t addr_bytes)
 
 void Flash_SPI_ReadData(uint8_t *buf, uint32_t len)
 {
-    uint32_t i;
-    for (i = 0U; i < len; i++)
+    for (uint32_t i = 0U; i < len; i++)
     {
         buf[i] = Flash_SPI_TransferByte(0xFFU);
     }
@@ -79,8 +78,7 @@ void Flash_SPI_ReadData(uint8_t *buf, uint32_t len)
 
 void Flash_SPI_WriteData(const uint8_t *buf, uint32_t len)
 {
-    uint32_t i;
-    for (i = 0U; i < len; i++)
+    for (uint32_t i = 0U; i < len; i++)
     {
         (void)Flash_SPI_TransferByte(buf[i]);
     }
