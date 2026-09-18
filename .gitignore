@@ -1,0 +1,27 @@
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.out
+*.bin
+*.hex
+*.d
+*.crf
+*.axf
+*.map
+*.lst
+*.htm
+
+# Keil uVision / IDE project temp files
+*.uvopt*
+*.uvgui*
+*.bak
+*.dep
+JLinkLog.txt
+
+# Editor / OS files
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
