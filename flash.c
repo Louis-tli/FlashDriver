@@ -456,8 +456,9 @@ int Flash_SelectDie(uint8_t die_idx)
 /******************************************************************************
  * Public API: Flash_Read
  ******************************************************************************/
-int Flash_Read(uint32_t addr, void *buf, uint32_t len,
-               FLASH_READ_MODE mode, uint32_t options)
+int Flash_Read(uint32_t addr, void *buf, uint32_t count,
+               FLASH_READ_MODE mode, FLASH_READ_UNIT unit,
+               uint32_t options)
 {
     const FLASH_INFO *info;
     const FLASH_READ_CFG *read_cfg;
@@ -465,15 +466,52 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t len,
     uint32_t remaining;
     uint32_t current_addr;
     uint32_t chunk_len;
+    uint32_t chunk_count;
     uint8_t target_die;
     uint32_t die_addr;
     uint32_t crc_val;
     uint32_t i;
+    uint8_t effective_unit;
+    uint32_t total_bytes;
     int status;
 
-    if ((buf == NULL) || (len == 0U) || (mode >= FLASH_READ_MODE_MAX))
+    /* Unit Resolution: default (0) or WORD (4) -> 4 bytes, HALFWORD (2) -> 2 bytes, BYTE (1) -> 1 byte */
+    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD))
+    {
+        effective_unit = 4U;
+    }
+    else if (unit == FLASH_READ_UNIT_HALFWORD)
+    {
+        effective_unit = 2U;
+    }
+    else if (unit == FLASH_READ_UNIT_BYTE)
+    {
+        effective_unit = 1U;
+    }
+    else
     {
         return FLASH_ERR_PARAM;
+    }
+
+    if ((buf == NULL) || (count == 0U) || (mode >= FLASH_READ_MODE_MAX))
+    {
+        return FLASH_ERR_PARAM;
+    }
+
+    /* Cortex-M0 Alignment check based on effective unit */
+    if (effective_unit == 4U)
+    {
+        if ((((uint32_t)(uintptr_t)buf & 3U) != 0U) || ((addr & 3U) != 0U))
+        {
+            return FLASH_ERR_ALIGNMENT;
+        }
+    }
+    else if (effective_unit == 2U)
+    {
+        if ((((uint32_t)(uintptr_t)buf & 1U) != 0U) || ((addr & 1U) != 0U))
+        {
+            return FLASH_ERR_ALIGNMENT;
+        }
     }
 
     info = g_flash_handle.info;
@@ -482,9 +520,10 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t len,
         return FLASH_ERR_PARAM;
     }
 
+    total_bytes = count * (uint32_t)effective_unit;
     read_cfg = &info->read_cfg[mode];
     p_buf = (uint8_t *)buf;
-    remaining = len;
+    remaining = total_bytes;
     current_addr = addr;
 
     /* Loop over transfer to handle Multi-Die boundary crossings if any */
@@ -530,7 +569,9 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t len,
             Flash_SFC_SetReadConfig(read_cfg, info->addr_bytes);
 
             /* Step 4: Execute Memory-Mapped DMA transfer */
-            status = Flash_SFC_DMARead(die_addr, p_buf, chunk_len,
+            chunk_count = chunk_len / (uint32_t)effective_unit;
+            status = Flash_SFC_DMARead(die_addr, p_buf, chunk_count,
+                                       unit,
                                        ((options & FLASH_READ_OPT_CRC) != 0U) ? 1U : 0U,
                                        &crc_val);
             if (status != FLASH_OK)

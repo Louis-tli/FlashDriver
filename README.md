@@ -15,9 +15,12 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 - **초경량 메모리 풋프린트 (< 3KB)**:
   - `flash.o` 코드 크기 약 2.2 KB.
   - 모델 정보는 ROM(`.rodata`) 상주, SRAM은 가벼운 핸들 1개만 사용. 동적 메모리 할당(`malloc`) 완전 배제.
+- **다양한 읽기 단위 지원 (Read Access Units - Byte / Halfword / Word)**:
+  - `FLASH_READ_UNIT_BYTE` (8-bit), `FLASH_READ_UNIT_HALFWORD` (16-bit), `FLASH_READ_UNIT_WORD` (32-bit, 기본값) 지원.
+  - 기본값(0 지정 시)은 32-bit Word 단위로 자동 해석되어 4바이트 정렬 검사 및 SFC ACCESS_UNIT 설정 수행.
 - **Cortex-M0 (`arm-cm0`) & `armcc` 호환**:
   - Strict C90 표준 준수.
-  - 4-Byte 정렬 검사로 Cortex-M0 Unaligned Access HardFault 원천 차단.
+  - Word(4-Byte)/Halfword(2-Byte) 단위별 정렬 검사로 Cortex-M0 Unaligned Access HardFault 원천 차단.
 - **256-Byte Page Boundary 자동 분할**:
   - 페이지 경계를 걸치는 Program 요청 시 256바이트 단위로 자동 분할 전송.
 
@@ -33,19 +36,18 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 | **W25Q256JV** | Winbond | `0xEF4019` | 32MB | 4B | 4-Byte Address Mode (`0xB7`) 자동 진입 |
 | **W25Q512JV** | Winbond | `0xEF4020` | 64MB | 4B | 4-Byte Address Mode (`0xB7`) 자동 진입 |
 | **GD25LQ64E** | GigaDevice | `0xC86017` | 8MB | 3B | SR1+SR2 2-Byte 동시 쓰기 (`0x01`) 지원 |
-| **GD25LQ64E_PLUTO_SFC** | GigaDevice | `0xC86017` | 8MB | 3B | Pluto SFC 컨트롤러 맞춤형 Dummy 프로파일 적용 |
 
 ---
 
 ## 📁 파일 구성 (File Structure)
 
 ```text
-├── flash.h          # 공개 드라이버 API, 설정 플래그, FLASH_INFO 및 FLASH_HANDLE 정의
+├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
 ├── flash.c          # 드라이버 코어 엔진 (Init, Read, Program, Erase, Die Select 등)
 ├── flash_table.h    # Flash 모델 검색 인터페이스 및 테이블 선언
 ├── flash_table.c    # 7종 Flash 메모리 ROM 테이블 (const FLASH_INFO)
-├── flash_sfc.h      # TCON SFC IP 하드웨어 레지스터 맵 및 DMA API 헤더
-├── flash_sfc.c      # TCON SFC IP 드라이버 구현 (Single/Quad 모드 전환, 2K/4K DMA Read)
+├── flash_sfc.h      # TCON SFC IP 하드웨어 레지스터 맵(ACCESS_UNIT 포함) 및 DMA API 헤더
+├── flash_sfc.c      # TCON SFC IP 드라이버 구현 (Single/Quad 모드 전환, 단위별 2K/4K DMA Read)
 ├── flash_spi.h      # Low-Level SPI 컨트롤러 인터페이스 헤더
 ├── flash_spi.c      # Low-Level SPI 컨트롤러 드라이버 및 HW 추상화 스텁
 └── test_flash.c     # 전 기능 시뮬레이션 및 C90 표준 검증 테스트 슈트
@@ -71,4 +73,4 @@ gcc -std=c90 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
 4. **Page Boundary Splitting**: 256바이트 경계 걸침 시 3회 분할 쓰기
 5. **Multi-Die Switching**: W25M512 32MB 경계 주소 접근 시 `0xC2` Software Die Select 자동 전환
-6. **SFC DMA Read Sequence**: SFC Single 모드 ➔ BUSY 대기 ➔ Quad I/O 모드 ➔ DMA 청크 전송
+6. **Flash Read Units & SFC DMA Read**: Byte(1B), Halfword(2B), Word(4B, Default) 단위별 읽기 및 정렬 검증, SFC DMA 시퀀스 검증

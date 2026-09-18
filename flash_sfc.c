@@ -69,30 +69,63 @@ void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, uint8_t addr_bytes)
     }
 }
 
-int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t len,
-                      uint8_t use_crc, uint32_t *p_crc_out)
+int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
+                      FLASH_READ_UNIT unit, uint8_t use_crc, uint32_t *p_crc_out)
 {
     uint8_t *p_dst;
     uint32_t remaining;
     uint32_t current_addr;
     uint32_t chunk_len;
     uint32_t timeout;
+    uint8_t effective_unit;
+    uint32_t total_bytes;
 
-    if ((dst_buf == NULL) || (len == 0U))
+    /* Default access unit is WORD (32-bit / 4 bytes) */
+    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD))
+    {
+        effective_unit = 4U;
+    }
+    else if (unit == FLASH_READ_UNIT_HALFWORD)
+    {
+        effective_unit = 2U;
+    }
+    else if (unit == FLASH_READ_UNIT_BYTE)
+    {
+        effective_unit = 1U;
+    }
+    else
     {
         return FLASH_ERR_PARAM;
     }
 
-    /* Cortex-M0 strictly requires 4-byte aligned addresses for 32-bit DMA transfers */
-    if (((uint32_t)(uintptr_t)dst_buf & 3U) != 0U)
+    if ((dst_buf == NULL) || (count == 0U))
     {
-        return FLASH_ERR_ALIGNMENT;
+        return FLASH_ERR_PARAM;
+    }
+
+    /* Cortex-M0 strictly requires aligned memory access according to transfer unit */
+    if (effective_unit == 4U)
+    {
+        if ((((uint32_t)(uintptr_t)dst_buf & 3U) != 0U) || ((flash_addr & 3U) != 0U))
+        {
+            return FLASH_ERR_ALIGNMENT;
+        }
+    }
+    else if (effective_unit == 2U)
+    {
+        if ((((uint32_t)(uintptr_t)dst_buf & 1U) != 0U) || ((flash_addr & 1U) != 0U))
+        {
+            return FLASH_ERR_ALIGNMENT;
+        }
     }
 
     if (g_p_sfc_regs == NULL)
     {
         return FLASH_ERR_HARDWARE;
     }
+
+    total_bytes = count * (uint32_t)effective_unit;
+    g_p_sfc_regs->ACCESS_UNIT = (uint32_t)effective_unit;
 
     /* Initialize hardware CRC engine if requested */
     if (use_crc != 0U)
@@ -101,7 +134,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t len,
     }
 
     p_dst = (uint8_t *)dst_buf;
-    remaining = len;
+    remaining = total_bytes;
     current_addr = flash_addr;
 
     /* Loop through transfers split by SFC page size (2KB or 4KB) */

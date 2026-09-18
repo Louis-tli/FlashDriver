@@ -35,12 +35,13 @@ typedef struct
     volatile uint32_t DUMMY_LAST;       /* 0x1C: Dummy Last Byte Value */
     volatile uint32_t MODE_BYTE;        /* 0x20: Mode Cycle Byte (Continuous Read) */
     volatile uint32_t PAGE_SIZE;        /* 0x24: Transfer Page Size (2048 or 4096) */
-    volatile uint32_t DMA_SRC;          /* 0x28: Flash Source Address */
-    volatile uint32_t DMA_DST;          /* 0x2C: Internal SRAM Destination Address */
-    volatile uint32_t DMA_LEN;          /* 0x30: Transfer Length in Bytes */
-    volatile uint32_t STATUS;           /* 0x34: SFC / DMA Status (Done, Busy, Error) */
-    volatile uint32_t CRC_CTRL;         /* 0x38: Hardware CRC Calculation Control */
-    volatile uint32_t CRC_RES;          /* 0x3C: Hardware CRC Result Register */
+    volatile uint32_t ACCESS_UNIT;      /* 0x28: Access Unit (1: Byte, 2: Halfword, 4: Word - Default: Word) */
+    volatile uint32_t DMA_SRC;          /* 0x2C: Flash Source Address */
+    volatile uint32_t DMA_DST;          /* 0x30: Internal SRAM Destination Address */
+    volatile uint32_t DMA_LEN;          /* 0x34: Transfer Length in Bytes */
+    volatile uint32_t STATUS;           /* 0x38: SFC / DMA Status (Done, Busy, Error) */
+    volatile uint32_t CRC_CTRL;         /* 0x3C: Hardware CRC Calculation Control */
+    volatile uint32_t CRC_RES;          /* 0x40: Hardware CRC Result Register */
 } SFC_TypeDef;
 
 /******************************************************************************
@@ -87,15 +88,16 @@ void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, uint8_t addr_bytes);
 /**
  * @brief Perform Memory-Mapped DMA Read through SFC IP.
  *        Automatically splits transfer into 2KB / 4KB chunks and optionally computes CRC.
- * @param flash_addr: Linear Flash start address.
- * @param dst_buf: Destination buffer (must be 4-byte aligned).
- * @param len: Total transfer length in bytes.
+ * @param flash_addr: Linear Flash start address (must be aligned to unit size).
+ * @param dst_buf: Destination buffer (must be aligned to unit size).
+ * @param count: Number of units to read.
+ * @param unit: FLASH_READ_UNIT (BYTE=1, HALFWORD=2, WORD=4, or DEFAULT=0 for WORD).
  * @param use_crc: 1 to enable hardware CRC calculation.
  * @param p_crc_out: Pointer to receive 32-bit CRC result (can be NULL).
  * @return FLASH_OK on success, or negative error code.
  */
-int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t len,
-                      uint8_t use_crc, uint32_t *p_crc_out);
+int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
+                      FLASH_READ_UNIT unit, uint8_t use_crc, uint32_t *p_crc_out);
 
 /**
  * @brief Get configured SFC transfer page size.

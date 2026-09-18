@@ -333,28 +333,77 @@ static void Test_SFCDMAReadSequence(void)
     uint32_t crc_val = 0U;
     int status;
 
-    printf("[TEST 6] Testing TCON SFC Memory-Mapped DMA Read Sequence...\n");
+    printf("[TEST 6] Testing Flash Read Units (Byte, Halfword, Word) and SFC DMA Read...\n");
 
     s_mock.mock_jedec_id = 0xEF4019U; /* W25Q256JV */
     status = Flash_Init();
     assert(status == FLASH_OK);
 
-    /* 1. Alignment check: Unaligned destination buffer must be rejected */
+    /* 1. Alignment check: Unaligned destination buffer for WORD read must be rejected */
     p_unaligned = ((uint8_t *)aligned_buf) + 1;
-    status = Flash_Read(0x00001000U, p_unaligned, 128U, FLASH_READ_QUAD_IO,
+    status = Flash_Read(0x00001000U, p_unaligned, 32U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD,
                         FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
     assert(status == FLASH_ERR_ALIGNMENT);
-    printf("  - Unaligned DMA buffer properly rejected with FLASH_ERR_ALIGNMENT.\n");
 
-    /* 2. Aligned DMA Read with SFC Sequence:
-     *    SFC Single Mode -> Poll Busy -> SFC Quad I/O Mode -> DMA Chunks */
-    status = Flash_Read(0x00001000U, aligned_buf, 4096U, FLASH_READ_QUAD_IO,
+    /* Address unaligned for WORD read */
+    status = Flash_Read(0x00001002U, aligned_buf, 32U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD,
+                        FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+    assert(status == FLASH_ERR_ALIGNMENT);
+    printf("  - Word alignment checks (buf & addr) verified with FLASH_ERR_ALIGNMENT.\n");
+
+    /* 2. Default unit (0) -> resolves to WORD (4 bytes) */
+    status = Flash_Read(0x00001000U, aligned_buf, 1024U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_DEFAULT,
                         FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA | FLASH_READ_OPT_CRC);
     assert(status == FLASH_OK);
     assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ); /* 0xEB */
     assert(g_p_sfc_regs->ADDR_SIZE == 4U);
     assert(g_p_sfc_regs->MODE == 4U);              /* Quad width */
-    printf("  - SFC Quad I/O DMA read and sequence successfully validated. PASSED.\n\n");
+    assert(g_p_sfc_regs->ACCESS_UNIT == 4U);       /* Resolved default unit = Word (4) */
+    printf("  - Default unit (0) resolved to Word (4 bytes) in SFC ACCESS_UNIT.\n");
+
+    /* 3. Halfword read (2 bytes per unit) */
+    status = Flash_Read(0x00001000U, aligned_buf, 2048U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_HALFWORD,
+                        FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+    assert(status == FLASH_OK);
+    assert(g_p_sfc_regs->ACCESS_UNIT == 2U);
+    /* Halfword unaligned test */
+    status = Flash_Read(0x00001001U, aligned_buf, 10U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_HALFWORD,
+                        FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+    assert(status == FLASH_ERR_ALIGNMENT);
+    printf("  - Halfword unit (2 bytes) and 2-byte alignment verified.\n");
+
+    /* 4. Byte read (1 byte per unit) */
+    status = Flash_Read(0x00001001U, p_unaligned, 128U, FLASH_READ_FAST,
+                        FLASH_READ_UNIT_BYTE,
+                        FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+    assert(status == FLASH_OK);
+    assert(g_p_sfc_regs->ACCESS_UNIT == 1U);
+    printf("  - Byte unit (1 byte) tested (unaligned buffer & addr allowed).\n");
+
+    /* 5. Direct SPI Read with Word, Halfword, Byte */
+    status = Flash_Read(0x00001000U, aligned_buf, 64U, FLASH_READ_SINGLE,
+                        FLASH_READ_UNIT_WORD, 0U);
+    assert(status == FLASH_OK);
+    status = Flash_Read(0x00001000U, aligned_buf, 128U, FLASH_READ_SINGLE,
+                        FLASH_READ_UNIT_HALFWORD, 0U);
+    assert(status == FLASH_OK);
+    status = Flash_Read(0x00001001U, p_unaligned, 256U, FLASH_READ_SINGLE,
+                        FLASH_READ_UNIT_BYTE, 0U);
+    assert(status == FLASH_OK);
+    printf("  - Direct SPI Read with Word, Halfword, Byte verified.\n");
+
+    /* 6. Invalid unit rejected */
+    status = Flash_Read(0x00001000U, aligned_buf, 10U, FLASH_READ_QUAD_IO,
+                        (FLASH_READ_UNIT)3, 0U);
+    assert(status == FLASH_ERR_PARAM);
+    printf("  - Invalid unit rejected with FLASH_ERR_PARAM.\n");
+
+    printf("  - Read unit and SFC DMA sequence test PASSED.\n\n");
     (void)crc_val;
 }
 

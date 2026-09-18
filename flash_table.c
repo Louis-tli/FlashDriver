@@ -200,33 +200,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             /* QUAD */     { CMD_QUAD_READ,    8U, 1U, 0xFFU, 0xFFU, 0x00U, 4U },
             /* QUAD_IO */  { CMD_QUAD_IO_READ, 6U, 3U, 0xFFU, 0xFFU, 0x20U, 4U }
         }
-    },
-
-    /* ------------------------------------------------------------------------
-     * [7] GD25LQ64E_PLUTO_SFC (Pluto SFC Controller Profile)
-     * ------------------------------------------------------------------------ */
-    {
-        "GD25LQ64E (Pluto SFC)",
-        0xC86017U,                          /* Same JEDEC ID, selected via priority or board config */
-        FLASH_MODEL_GD25LQ64E_PLUTO_SFC,
-        8U * 1024U * 1024U,                 /* Total Size: 8 MB */
-        256U,                               /* Page Size: 256 B */
-        4096U,                              /* Sector Size: 4 KB */
-        65536U,                             /* Block Size: 64 KB */
-        3U,                                 /* 3-byte address */
-        2U,                                 /* QE in Status Register 2 */
-        1U,                                 /* QE is Bit 1 */
-        FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE,
-        1U,                                 /* Single Die */
-        0U,
-        {
-            /* SINGLE */   { CMD_READ,         0U, 0U, 0x00U, 0x00U, 0x00U, 1U },
-            /* FAST */     { CMD_FAST_READ,    8U, 1U, 0x00U, 0x00U, 0x00U, 1U },
-            /* DUAL */     { CMD_DUAL_READ,    8U, 1U, 0x00U, 0x00U, 0x00U, 2U },
-            /* DUAL_IO */  { CMD_DUAL_IO_READ, 4U, 1U, 0x00U, 0x00U, 0x00U, 2U },
-            /* QUAD */     { CMD_QUAD_READ,    8U, 1U, 0x00U, 0x00U, 0x00U, 4U },
-            /* QUAD_IO */  { CMD_QUAD_IO_READ, 6U, 3U, 0x00U, 0x00U, 0x20U, 4U }
-        }
     }
 };
 

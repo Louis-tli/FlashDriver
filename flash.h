@@ -53,7 +53,6 @@ typedef enum
     FLASH_MODEL_W25Q512JV,              /* Winbond 512Mb */
     FLASH_MODEL_W25Q256JV,              /* Winbond 256Mb */
     FLASH_MODEL_GD25LQ64E,              /* GigaDevice 64Mb (1.8V) */
-    FLASH_MODEL_GD25LQ64E_PLUTO_SFC,    /* GigaDevice 64Mb with Pluto SFC profile */
     FLASH_MODEL_UNKNOWN
 } FLASH_MODEL;
 
@@ -70,6 +69,17 @@ typedef enum
     FLASH_READ_QUAD_IO,                 /* EBh: Quad I/O Read (1-4-4) */
     FLASH_READ_MODE_MAX
 } FLASH_READ_MODE;
+
+/******************************************************************************
+ * Read Access Units (Transfer Unit: Byte, Halfword, Word - Default: Word)
+ ******************************************************************************/
+typedef enum
+{
+    FLASH_READ_UNIT_DEFAULT  = 0,   /* Default: 32-bit Word access */
+    FLASH_READ_UNIT_BYTE     = 1,   /* 8-bit Byte access */
+    FLASH_READ_UNIT_HALFWORD = 2,   /* 16-bit Halfword access */
+    FLASH_READ_UNIT_WORD     = 4    /* 32-bit Word access */
+} FLASH_READ_UNIT;
 
 /******************************************************************************
  * Program Modes
@@ -292,15 +302,18 @@ int Flash_SelectDie(uint8_t die_idx);
 /**
  * @brief  Read data from Flash.
  *         Supports both direct SPI and TCON SFC Memory-Mapped DMA transfer.
- * @param  addr: 32-bit linear Flash address.
- * @param  buf: Destination buffer (must be 4-byte aligned if DMA is enabled).
- * @param  len: Length in bytes.
+ *         Access unit can be BYTE (1), HALFWORD (2), or WORD (4). Default is WORD (0 or 4).
+ * @param  addr: 32-bit linear Flash address (must be aligned to unit size).
+ * @param  buf: Destination buffer (must be aligned to unit size).
+ * @param  count: Number of units to read (e.g. if unit is WORD, count=10 reads 10 words = 40 bytes).
  * @param  mode: Read mode (Single, Fast, Dual, Quad, etc.).
+ * @param  unit: FLASH_READ_UNIT_BYTE, FLASH_READ_UNIT_HALFWORD, or FLASH_READ_UNIT_WORD (0 for default WORD).
  * @param  options: Bitmask of FLASH_READ_OPT_* flags.
  * @return FLASH_OK on success, or negative error code.
  */
-int Flash_Read(uint32_t addr, void *buf, uint32_t len,
-               FLASH_READ_MODE mode, uint32_t options);
+int Flash_Read(uint32_t addr, void *buf, uint32_t count,
+               FLASH_READ_MODE mode, FLASH_READ_UNIT unit,
+               uint32_t options);
 
 /**
  * @brief  Program data into Flash (Single 02h or Quad 32h).
