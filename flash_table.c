@@ -2,11 +2,36 @@
  * File Name   : flash_table.c
  * Description : Flash Device Profiles and Model Lookup Table for ARM Cortex-M0
  * Target Core : ARM Cortex-M0 (ARMv6-M)
- * Compiler    : ARMCC / ARMCLANG / GCC (C99 Compatible)
+ * Compiler    : ARMCC (ARM Compiler 5) / ARMCLANG / GCC (C99 Compatible)
  * Note        : Stored in ROM (.rodata) to conserve Cortex-M0 SRAM.
+ *
+ * SW-013 / G6: read-mode configs that are identical across devices are built
+ *              from shared READCFG() rows (common values defined once). Only
+ *              the genuinely per-device differences (DUAL_IO / QUAD_IO dummy)
+ *              are spelled out per entry.
  ******************************************************************************/
 
 #include "flash_table.h"
+
+/******************************************************************************
+ * Shared Read-Mode Config Builders (G6: common values defined once)
+ ******************************************************************************/
+#define READCFG(_c,_dc,_db,_dv,_dl,_mb,_w)                              \
+    { .command = (_c), .dummy_cycles = (_dc), .dummy_bytes = (_db),      \
+      .dummy_value = (_dv), .dummy_last = (_dl), .mode_byte = (_mb),     \
+      .io_width = (_w) }
+
+/* Identical on every supported device */
+#define RC_SINGLE       READCFG(CMD_READ,         0U, 0U, 0x00U, 0x00U, 0x00U, 1U)
+#define RC_FAST         READCFG(CMD_FAST_READ,    8U, 1U, 0xFFU, 0xFFU, 0x00U, 1U)
+#define RC_DUAL         READCFG(CMD_DUAL_READ,    8U, 1U, 0xFFU, 0xFFU, 0x00U, 2U)
+#define RC_QUAD         READCFG(CMD_QUAD_READ,    8U, 1U, 0xFFU, 0xFFU, 0x00U, 4U)
+
+/* Per-device variations */
+#define RC_DUAL_IO      READCFG(CMD_DUAL_IO_READ, 4U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* default */
+#define RC_DUAL_IO_GD   READCFG(CMD_DUAL_IO_READ, 6U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* GD25LQ64E */
+#define RC_QUAD_IO_8    READCFG(CMD_QUAD_IO_READ, 8U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 8 */
+#define RC_QUAD_IO_6    READCFG(CMD_QUAD_IO_READ, 6U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 6 */
 
 /******************************************************************************
  * ROM Table containing configurations for supported SPI NOR Flash models
@@ -31,12 +56,12 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .die_count    = 1U,
         .die_size     = 0U,
         .read_cfg     = {
-            [FLASH_READ_SINGLE]  = { .command = CMD_READ,         .dummy_cycles = 0U, .dummy_bytes = 0U, .dummy_value = 0x00U, .dummy_last = 0x00U, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_FAST]    = { .command = CMD_FAST_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_DUAL]    = { .command = CMD_DUAL_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_DUAL_IO] = { .command = CMD_DUAL_IO_READ, .dummy_cycles = 4U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_QUAD]    = { .command = CMD_QUAD_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 4U },
-            [FLASH_READ_QUAD_IO] = { .command = CMD_QUAD_IO_READ, .dummy_cycles = 6U, .dummy_bytes = 3U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x20U, .io_width = 4U }
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
         }
     },
 
@@ -58,12 +83,12 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .die_count    = 1U,
         .die_size     = 0U,
         .read_cfg     = {
-            [FLASH_READ_SINGLE]  = { .command = CMD_READ,         .dummy_cycles = 0U, .dummy_bytes = 0U, .dummy_value = 0x00U, .dummy_last = 0x00U, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_FAST]    = { .command = CMD_FAST_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_DUAL]    = { .command = CMD_DUAL_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_DUAL_IO] = { .command = CMD_DUAL_IO_READ, .dummy_cycles = 4U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_QUAD]    = { .command = CMD_QUAD_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 4U },
-            [FLASH_READ_QUAD_IO] = { .command = CMD_QUAD_IO_READ, .dummy_cycles = 8U, .dummy_bytes = 3U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x20U, .io_width = 4U }
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
         }
     },
 
@@ -85,12 +110,12 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .die_count    = 2U,
         .die_size     = 32U * 1024U * 1024U,
         .read_cfg     = {
-            [FLASH_READ_SINGLE]  = { .command = CMD_READ,         .dummy_cycles = 0U, .dummy_bytes = 0U, .dummy_value = 0x00U, .dummy_last = 0x00U, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_FAST]    = { .command = CMD_FAST_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_DUAL]    = { .command = CMD_DUAL_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_DUAL_IO] = { .command = CMD_DUAL_IO_READ, .dummy_cycles = 4U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_QUAD]    = { .command = CMD_QUAD_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 4U },
-            [FLASH_READ_QUAD_IO] = { .command = CMD_QUAD_IO_READ, .dummy_cycles = 8U, .dummy_bytes = 3U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x20U, .io_width = 4U }
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
         }
     },
 
@@ -112,12 +137,12 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .die_count    = 1U,
         .die_size     = 0U,
         .read_cfg     = {
-            [FLASH_READ_SINGLE]  = { .command = CMD_READ,         .dummy_cycles = 0U, .dummy_bytes = 0U, .dummy_value = 0x00U, .dummy_last = 0x00U, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_FAST]    = { .command = CMD_FAST_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_DUAL]    = { .command = CMD_DUAL_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_DUAL_IO] = { .command = CMD_DUAL_IO_READ, .dummy_cycles = 4U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_QUAD]    = { .command = CMD_QUAD_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 4U },
-            [FLASH_READ_QUAD_IO] = { .command = CMD_QUAD_IO_READ, .dummy_cycles = 6U, .dummy_bytes = 3U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x20U, .io_width = 4U }
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
         }
     },
 
@@ -139,12 +164,12 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .die_count    = 1U,
         .die_size     = 0U,
         .read_cfg     = {
-            [FLASH_READ_SINGLE]  = { .command = CMD_READ,         .dummy_cycles = 0U, .dummy_bytes = 0U, .dummy_value = 0x00U, .dummy_last = 0x00U, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_FAST]    = { .command = CMD_FAST_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_DUAL]    = { .command = CMD_DUAL_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_DUAL_IO] = { .command = CMD_DUAL_IO_READ, .dummy_cycles = 4U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_QUAD]    = { .command = CMD_QUAD_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 4U },
-            [FLASH_READ_QUAD_IO] = { .command = CMD_QUAD_IO_READ, .dummy_cycles = 8U, .dummy_bytes = 3U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x20U, .io_width = 4U }
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
         }
     },
 
@@ -166,12 +191,12 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .die_count    = 1U,
         .die_size     = 0U,
         .read_cfg     = {
-            [FLASH_READ_SINGLE]  = { .command = CMD_READ,         .dummy_cycles = 0U, .dummy_bytes = 0U, .dummy_value = 0x00U, .dummy_last = 0x00U, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_FAST]    = { .command = CMD_FAST_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_DUAL]    = { .command = CMD_DUAL_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_DUAL_IO] = { .command = CMD_DUAL_IO_READ, .dummy_cycles = 4U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_QUAD]    = { .command = CMD_QUAD_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 4U },
-            [FLASH_READ_QUAD_IO] = { .command = CMD_QUAD_IO_READ, .dummy_cycles = 8U, .dummy_bytes = 3U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x20U, .io_width = 4U }
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
         }
     },
 
@@ -193,18 +218,48 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .die_count    = 1U,
         .die_size     = 0U,
         .read_cfg     = {
-            [FLASH_READ_SINGLE]  = { .command = CMD_READ,         .dummy_cycles = 0U, .dummy_bytes = 0U, .dummy_value = 0x00U, .dummy_last = 0x00U, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_FAST]    = { .command = CMD_FAST_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 1U },
-            [FLASH_READ_DUAL]    = { .command = CMD_DUAL_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_DUAL_IO] = { .command = CMD_DUAL_IO_READ, .dummy_cycles = 4U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 2U },
-            [FLASH_READ_QUAD]    = { .command = CMD_QUAD_READ,    .dummy_cycles = 8U, .dummy_bytes = 1U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x00U, .io_width = 4U },
-            [FLASH_READ_QUAD_IO] = { .command = CMD_QUAD_IO_READ, .dummy_cycles = 6U, .dummy_bytes = 3U, .dummy_value = 0xFFU, .dummy_last = 0xFFU, .mode_byte = 0x20U, .io_width = 4U }
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
+        }
+    },
+
+    /* ------------------------------------------------------------------------
+     * [7] GD25LQ64E_PLUTO_SFC (same chip as [6]; Pluto SoC SFC variant).
+     *     Shares the GD25LQ64E silicon and command set; only the TCON/Pluto SFC
+     *     transfer timing differs. Selected explicitly via the boot config model
+     *     field (both entries share JEDEC 0xC86017).
+     * ------------------------------------------------------------------------ */
+    [7] = {
+        .name         = "GD25LQ64E (Pluto SFC)",
+        .jedec_id     = 0xC86017U,
+        .model_id     = FLASH_MODEL_GD25LQ64E_PLUTO_SFC,
+        .flash_size   = 8U * 1024U * 1024U,
+        .page_size    = 256U,
+        .sector_size  = 4096U,
+        .block_size   = 65536U,
+        .addr_bytes   = 3U,
+        .qe_reg       = 2U,
+        .qe_bit       = 1U,
+        .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE,
+        .die_count    = 1U,
+        .die_size     = 0U,
+        .read_cfg     = {
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
         }
     }
 };
 
 /******************************************************************************
- * Model Lookup Function
+ * Model Lookup Functions
  ******************************************************************************/
 const FLASH_INFO *Flash_FindDevice(uint32_t jedec_id)
 {
@@ -212,6 +267,20 @@ const FLASH_INFO *Flash_FindDevice(uint32_t jedec_id)
     for (uint32_t i = 0U; i < FLASH_TABLE_ENTRIES_COUNT; i++)
     {
         if (g_flash_table[i].jedec_id == jedec_id)
+        {
+            return &g_flash_table[i];
+        }
+    }
+
+    return NULL;
+}
+
+const FLASH_INFO *Flash_FindDeviceByModel(FLASH_MODEL model_id)
+{
+    /* First entry with the requested model (disambiguates shared-JEDEC variants) */
+    for (uint32_t i = 0U; i < FLASH_TABLE_ENTRIES_COUNT; i++)
+    {
+        if (g_flash_table[i].model_id == model_id)
         {
             return &g_flash_table[i];
         }

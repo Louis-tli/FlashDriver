@@ -3,7 +3,10 @@
  * Description : Generic SPI NOR Flash Driver Core Implementation
  * Target Core : ARM Cortex-M0 (ARMv6-M)
  * Compiler    : ARMCC (ARM Compiler 5) / ARMCLANG / GCC (C99 Compatible)
+ *
+ * Boot flow (SW-013): ID check -> basic-read settings -> configure -> lock.
  ******************************************************************************/
+
 
 #include "flash.h"
 #include "flash_table.h"
@@ -19,7 +22,9 @@ FLASH_HANDLE g_flash_handle =
     .state         = FLASH_STATE_UNINIT,
     .current_die   = 0U,
     .qe_enabled    = false,
-    .sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K
+    .sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K,
+    .locked        = false,
+    .last_crc      = 0U
 };
 
 /******************************************************************************
@@ -70,9 +75,224 @@ static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
 }
 
 /******************************************************************************
- * Public API: Flash_Init
+ * Helper: Apply non-common config to the ACTIVE die (4-Byte mode + QE).
+ *   Every die of a multi-die stack has its own status registers, so this must
+ *   run once per die (SW-013 / G1).
  ******************************************************************************/
-int Flash_Init(void)
+static int Flash_ApplyDieConfig(void)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+    if (info == NULL)
+    {
+        return FLASH_ERR_PARAM;
+    }
+
+    /* Configure 4-Byte Address Mode if this device requires it */
+    if (info->addr_bytes == 4U)
+    {
+        Flash_SPI_SendCmd(CMD_ENTER_4BYTE_ADDR);
+        (void)Flash_WaitBusy(10000U);
+    }
+
+    /* Verify / enable Quad Mode on this die */
+    if ((info->features & FLASH_FEAT_QUAD) != 0U)
+    {
+        return Flash_EnableQuad();
+    }
+
+    return FLASH_OK;
+}
+
+/******************************************************************************
+ * Helper: Apply non-common init across ALL dies of the active device.
+ ******************************************************************************/
+static int Flash_ApplyProductInit(void)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+    if (info == NULL)
+    {
+        return FLASH_ERR_PARAM;
+    }
+
+    if (((info->features & FLASH_FEAT_MULTI_DIE) != 0U) && (info->die_count > 1U))
+    {
+        for (uint8_t d = 0U; d < info->die_count; d++)
+        {
+            int status = Flash_SelectDie(d);
+            if (status != FLASH_OK)
+            {
+                return status;
+            }
+            status = Flash_ApplyDieConfig();
+            if (status != FLASH_OK)
+            {
+                return status;
+            }
+        }
+        return Flash_SelectDie(0U);
+    }
+
+    return Flash_ApplyDieConfig();
+}
+
+/******************************************************************************
+ * Public API: Flash_ConfigCrc
+ ******************************************************************************/
+uint32_t Flash_ConfigCrc(const FLASH_BOOT_CONFIG *cfg)
+{
+    if (cfg == NULL)
+    {
+        return 0U;
+    }
+
+    const uint8_t *p = (const uint8_t *)cfg;
+    const uint32_t n = (uint32_t)(sizeof(FLASH_BOOT_CONFIG) - sizeof(uint32_t));
+    uint32_t sum = 0x5A5A5A5AU;
+    for (uint32_t i = 0U; i < n; i++)
+    {
+        sum += (uint32_t)p[i];
+    }
+    return sum;
+}
+
+/******************************************************************************
+ * Public API: Flash_BasicRead (safe single-line 03h read, pre-configuration)
+ ******************************************************************************/
+int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
+{
+    if ((buf == NULL) || (len == 0U))
+    {
+        return FLASH_ERR_PARAM;
+    }
+
+    /* 03h + 3-byte address works on every supported device in low memory. */
+    Flash_SPI_CS_Low();
+    (void)Flash_SPI_TransferByte(CMD_READ);
+    Flash_SPI_SendAddr(addr, 3U);
+    Flash_SPI_ReadData((uint8_t *)buf, len);
+    Flash_SPI_CS_High();
+
+    return FLASH_OK;
+}
+
+/******************************************************************************
+ * Public API: Flash_BootInit (ID check -> settings -> configure -> lock)
+ ******************************************************************************/
+int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
+{
+    /* Once the selection is locked it is immutable for the rest of the boot. */
+    if (g_flash_handle.locked)
+    {
+        return FLASH_ERR_BUSY;
+    }
+
+    /* 1. Initialize SPI controller (safe) + SFC with default page size */
+    Flash_SPI_Init();
+    Flash_SPI_SetSpeed(10000000U);
+    Flash_SFC_Init(SFC_DEFAULT_PAGE_SIZE_4K);
+    g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
+
+    /* 2. Software Reset to clear any stale bus state (skippable for fast boot) */
+    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U)
+    {
+        (void)Flash_Reset();
+        Flash_DelayLoops(50000U);
+    }
+
+    /* 3. Read JEDEC ID and confirm the device responds */
+    uint32_t jedec_id = 0U;
+    int status = Flash_ReadJEDECID(&jedec_id);
+    if (status != FLASH_OK)
+    {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return status;
+    }
+    jedec_id &= FLASH_JEDEC_ID_MASK;
+    if ((jedec_id == 0x000000U) || (jedec_id == 0xFFFFFFU))
+    {
+        g_flash_handle.state = FLASH_STATE_NO_CONNECT;
+        return FLASH_ERR_NO_CONNECT;
+    }
+
+    /* 4. Basic-read the boot settings block from Flash */
+    FLASH_BOOT_CONFIG cfg;
+    status = Flash_BasicRead(config_addr, &cfg, (uint32_t)sizeof(cfg));
+    if (status != FLASH_OK)
+    {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return status;
+    }
+
+    /* 5. Validate settings block (magic + checksum) */
+    if ((cfg.magic != FLASH_BOOT_CFG_MAGIC) ||
+        (cfg.crc != Flash_ConfigCrc(&cfg)))
+    {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return FLASH_ERR_PARAM;
+    }
+
+    /* 6. Look up the selected product. The config's model field selects an exact
+     *    variant (e.g. GD25LQ64E_PLUTO_SFC when it shares a JEDEC ID); otherwise
+     *    fall back to matching by the expected JEDEC ID. */
+    const FLASH_INFO *p_info = NULL;
+    if (cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN)
+    {
+        p_info = Flash_FindDeviceByModel((FLASH_MODEL)cfg.model);
+    }
+    if (p_info == NULL)
+    {
+        p_info = Flash_FindDevice(cfg.jedec_expect);
+    }
+    if (p_info == NULL)
+    {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return FLASH_ERR_UNSUPPORTED;
+    }
+
+    /* 7. Fail-safe validation: the actual device must match the selection
+     *    (exact or same product family). A wrong / unknown ID is refused. */
+    if (!Flash_FamilyMatch(jedec_id, cfg.jedec_expect))
+    {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return FLASH_ERR_UNSUPPORTED;
+    }
+
+    /* 8. Configure from the settings block + product descriptor */
+    g_flash_handle.info         = p_info;
+    g_flash_handle.current_die  = 0U;
+    g_flash_handle.qe_enabled   = false;
+    g_flash_handle.last_crc     = 0U;
+    if ((cfg.sfc_page_size == SFC_DEFAULT_PAGE_SIZE_2K) ||
+        (cfg.sfc_page_size == SFC_DEFAULT_PAGE_SIZE_4K))
+    {
+        g_flash_handle.sfc_page_size = cfg.sfc_page_size;
+        Flash_SFC_Init(cfg.sfc_page_size);
+    }
+
+    /* 9. Apply non-common config to every die (QE + 4-Byte mode) */
+    status = Flash_ApplyProductInit();
+    if (status != FLASH_OK)
+    {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return status;
+    }
+
+    /* 10. Lock the selection (immutable) and go READY */
+    g_flash_handle.locked = true;
+    g_flash_handle.state  = FLASH_STATE_READY;
+    return FLASH_OK;
+}
+
+/* Convenience wrapper: default options (with software reset). */
+int Flash_BootInit(uint32_t config_addr)
+{
+    return Flash_BootInitOpt(config_addr, FLASH_INIT_OPT_NONE);
+}
+
+/******************************************************************************
+ * Public API: Flash_Init (auto-detect variant)
+ ******************************************************************************/
+int Flash_InitOpt(uint32_t options)
 {
     /* 1. Initialize low-level SPI controller hardware */
     Flash_SPI_Init();
@@ -84,9 +304,12 @@ int Flash_Init(void)
     Flash_SFC_Init(SFC_DEFAULT_PAGE_SIZE_4K);
     g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
 
-    /* 4. Issue Software Reset to clear any prior bus states */
-    (void)Flash_Reset();
-    Flash_DelayLoops(50000U);
+    /* 4. Issue Software Reset to clear any prior bus states (skippable) */
+    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U)
+    {
+        (void)Flash_Reset();
+        Flash_DelayLoops(50000U);
+    }
 
     /* 5. Read JEDEC Identification (9Fh) */
     uint32_t jedec_id = 0U;
@@ -116,30 +339,27 @@ int Flash_Init(void)
     g_flash_handle.info         = p_info;
     g_flash_handle.current_die  = 0U;
     g_flash_handle.qe_enabled   = false;
+    g_flash_handle.last_crc     = 0U;
 
-    /* 7. Configure 4-Byte Address Mode if required by Flash density (>= 256Mb) */
-    if (p_info->addr_bytes == 4U)
+    /* 7. Apply non-common config to every die (4-Byte mode + QE) */
+    status = Flash_ApplyProductInit();
+    if (status != FLASH_OK)
     {
-        Flash_SPI_SendCmd(CMD_ENTER_4BYTE_ADDR);
-        (void)Flash_WaitBusy(10000U);
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return status;
     }
 
-    /* 8. Verify and Enable Quad Mode (QE bit) if supported */
-    if ((p_info->features & FLASH_FEAT_QUAD) != 0U)
-    {
-        status = Flash_EnableQuad();
-        if (status != FLASH_OK)
-        {
-            g_flash_handle.state = FLASH_STATE_ERROR;
-            return status;
-        }
-    }
-
-    /* 9. Set high-speed operational clock (e.g. 50MHz for standard operations) */
+    /* 8. Set high-speed operational clock (e.g. 50MHz for standard operations) */
     Flash_SPI_SetSpeed(50000000U);
 
     g_flash_handle.state = FLASH_STATE_READY;
     return FLASH_OK;
+}
+
+/* Convenience wrapper: default options (with software reset). */
+int Flash_Init(void)
+{
+    return Flash_InitOpt(FLASH_INIT_OPT_NONE);
 }
 
 /******************************************************************************
@@ -340,6 +560,63 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 }
 
 /******************************************************************************
+ * Public API: Flash_Unprotect (SW-013 / G2)
+ ******************************************************************************/
+int Flash_Unprotect(void)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+    if (info == NULL)
+    {
+        return FLASH_ERR_PARAM;
+    }
+
+    uint8_t sr1 = 0U;
+    int status = Flash_ReadStatus(1U, &sr1);
+    if (status != FLASH_OK)
+    {
+        return status;
+    }
+
+    /* Clear BP0..BP3 (block protect), preserve QE and all other bits. */
+    const uint8_t clear_mask = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
+                                         FLASH_SR1_BP2 | FLASH_SR1_BP3);
+    const uint8_t new_sr1 = (uint8_t)(sr1 & (uint8_t)(~clear_mask));
+    if (new_sr1 == sr1)
+    {
+        return FLASH_OK;   /* already unprotected */
+    }
+
+    return Flash_WriteStatus(1U, new_sr1);
+}
+
+/******************************************************************************
+ * Public API: Flash_Protect (SW-013 / G2)
+ ******************************************************************************/
+int Flash_Protect(uint8_t bp_mask)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+    if (info == NULL)
+    {
+        return FLASH_ERR_PARAM;
+    }
+
+    uint8_t sr1 = 0U;
+    int status = Flash_ReadStatus(1U, &sr1);
+    if (status != FLASH_OK)
+    {
+        return status;
+    }
+
+    /* Replace BP0..BP3 with the requested 4-bit pattern, preserve the rest. */
+    const uint8_t bp_mask_bits = (uint8_t)((bp_mask & 0x0FU) << 2);
+    const uint8_t clear_mask   = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
+                                           FLASH_SR1_BP2 | FLASH_SR1_BP3);
+    const uint8_t new_sr1 = (uint8_t)((sr1 & (uint8_t)(~clear_mask)) | bp_mask_bits);
+
+    return Flash_WriteStatus(1U, new_sr1);
+}
+
+/******************************************************************************
  * Public API: Flash_EnableQuad
  ******************************************************************************/
 int Flash_EnableQuad(void)
@@ -405,7 +682,6 @@ int Flash_SelectDie(uint8_t die_idx)
     {
         return FLASH_ERR_PARAM;
     }
-
     if ((info->features & FLASH_FEAT_MULTI_DIE) == 0U)
     {
         return FLASH_OK;
@@ -483,6 +759,15 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
     uint32_t remaining = total_bytes;
     uint32_t current_addr = addr;
 
+    const bool use_crc = ((options & FLASH_READ_OPT_CRC) != 0U);
+
+    /* Reset the CRC engine once for the whole transfer (accumulate across chunks) */
+    if (use_crc)
+    {
+        Flash_SFC_CrcReset();
+        g_flash_handle.last_crc = 0U;
+    }
+
     /* Loop over transfer to handle Multi-Die boundary crossings if any */
     while (remaining > 0U)
     {
@@ -527,12 +812,12 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
             /* Step 3: Reconfigure SFC to target high-speed Read Mode */
             Flash_SFC_SetReadConfig(read_cfg, info->addr_bytes);
 
-            /* Step 4: Execute Memory-Mapped DMA transfer */
+            /* Step 4: Execute Memory-Mapped DMA transfer (accumulates CRC) */
             const uint32_t chunk_count = chunk_len / (uint32_t)effective_unit;
             uint32_t crc_val = 0U;
             status = Flash_SFC_DMARead(die_addr, p_buf, chunk_count,
                                        unit,
-                                       (options & FLASH_READ_OPT_CRC) != 0U,
+                                       use_crc,
                                        &crc_val);
             if (status != FLASH_OK)
             {
@@ -541,7 +826,13 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         }
         else
         {
-            /* Branch: Direct SPI Read Path */
+            /* Branch: Direct SPI Read Path (single-width only; Dual/Quad need SFC) */
+            if (read_cfg->io_width > 1U)
+            {
+                /* Refuse to silently read wrong data on a single-line bus. */
+                return FLASH_ERR_PARAM;
+            }
+
             status = Flash_WaitBusy(100000U);
             if (status != FLASH_OK)
             {
@@ -569,6 +860,12 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         current_addr += chunk_len;
         p_buf        += chunk_len;
         remaining    -= chunk_len;
+    }
+
+    /* Expose the accumulated CRC (all chunks combined) */
+    if (use_crc)
+    {
+        g_flash_handle.last_crc = Flash_SFC_CrcGet();
     }
 
     return FLASH_OK;
@@ -607,6 +904,14 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         }
 
         status = Flash_SelectDie(target_die);
+        if (status != FLASH_OK)
+        {
+            return status;
+        }
+
+        /* SW-013 / G2: clear block-protect on this die so the program cannot
+         * silently fail on a protected region. */
+        status = Flash_Unprotect();
         if (status != FLASH_OK)
         {
             return status;
@@ -752,6 +1057,13 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return status;
     }
 
+    /* SW-013 / G2: clear block-protect on this die so the erase cannot fail silently. */
+    status = Flash_Unprotect();
+    if (status != FLASH_OK)
+    {
+        return status;
+    }
+
     uint8_t erase_cmd;
     switch (mode)
     {
@@ -799,4 +1111,14 @@ FLASH_STATE Flash_GetState(void)
 const FLASH_INFO *Flash_GetInfo(void)
 {
     return g_flash_handle.info;
+}
+
+uint32_t Flash_GetLastCRC(void)
+{
+    return g_flash_handle.last_crc;
+}
+
+bool Flash_IsLocked(void)
+{
+    return g_flash_handle.locked;
 }

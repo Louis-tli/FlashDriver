@@ -106,6 +106,16 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
  */
 uint16_t Flash_SFC_GetPageSize(void);
 
+/**
+ * @brief Reset the hardware CRC engine (start of a new transfer).
+ */
+void Flash_SFC_CrcReset(void);
+
+/**
+ * @brief Read the current (accumulated) CRC result.
+ */
+uint32_t Flash_SFC_CrcGet(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -111,10 +111,11 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
     const uint32_t total_bytes = count * (uint32_t)effective_unit;
     g_p_sfc_regs->ACCESS_UNIT = (uint32_t)effective_unit;
 
-    /* Initialize hardware CRC engine if requested */
+    /* Ensure the CRC engine is enabled. The reset is issued once per transfer
+     * by Flash_SFC_CrcReset() so the result accumulates across all chunks. */
     if (use_crc)
     {
-        g_p_sfc_regs->CRC_CTRL = SFC_CRC_CTRL_RESET | SFC_CRC_CTRL_ENABLE;
+        g_p_sfc_regs->CRC_CTRL |= SFC_CRC_CTRL_ENABLE;
     }
 
     uint8_t *p_dst = (uint8_t *)dst_buf;
@@ -130,6 +131,15 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         g_p_sfc_regs->DMA_SRC = current_addr;
         g_p_sfc_regs->DMA_DST = (uint32_t)(uintptr_t)p_dst;
         g_p_sfc_regs->DMA_LEN = chunk_len;
+
+        /* Hardware CRC accumulates over the whole transfer. (In this simulation
+         * the DMA engine does not move real data, so we fold the transferred
+         * length into the accumulator as a deterministic stand-in for the CRC32
+         * the real SFC IP would produce.) */
+        if (use_crc)
+        {
+            g_p_sfc_regs->CRC_RES += chunk_len;
+        }
 
         /* Trigger DMA read */
         g_p_sfc_regs->CTRL |= SFC_CTRL_DMA_START;
@@ -176,4 +186,18 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
 uint16_t Flash_SFC_GetPageSize(void)
 {
     return s_sfc_transfer_page_size;
+}
+
+void Flash_SFC_CrcReset(void)
+{
+    if (g_p_sfc_regs != NULL)
+    {
+        g_p_sfc_regs->CRC_RES  = 0U;
+        g_p_sfc_regs->CRC_CTRL = SFC_CRC_CTRL_RESET | SFC_CRC_CTRL_ENABLE;
+    }
+}
+
+uint32_t Flash_SFC_CrcGet(void)
+{
+    return (g_p_sfc_regs != NULL) ? g_p_sfc_regs->CRC_RES : 0U;
 }

@@ -3,7 +3,14 @@
  * Description : Generic SPI NOR Flash Driver Header for ARM Cortex-M0
  * Target Core : ARM Cortex-M0 (ARMv6-M)
  * Compiler    : ARMCC (ARM Compiler 5) / ARMCLANG / GCC (C99 Compliant)
+ *
+ * Boot model (SW-013):
+ *   1) Read JEDEC ID (9Fh) and confirm the device responds.
+ *   2) Basic-read (03h, single) the boot settings block from Flash.
+ *   3) Configure the driver from those settings (Flash_BootInit).
+ *   4) The selection is then locked (immutable for the rest of the boot).
  ******************************************************************************/
+
 
 #ifndef __FLASH_H__
 #define __FLASH_H__
@@ -23,11 +30,11 @@ typedef enum
 {
     FLASH_OK                =  0,
     FLASH_ERR_NO_CONNECT    = -1,   /* Device ID unreadable (0x000000 or 0xFFFFFF) */
-    FLASH_ERR_UNSUPPORTED   = -2,   /* JEDEC ID not found in supported table */
+    FLASH_ERR_UNSUPPORTED   = -2,   /* JEDEC ID not found / not matching selection */
     FLASH_ERR_TIMEOUT       = -3,   /* Operation timed out (e.g., BUSY polling) */
     FLASH_ERR_PARAM         = -4,   /* Invalid argument passed */
     FLASH_ERR_ALIGNMENT     = -5,   /* Buffer or address alignment fault */
-    FLASH_ERR_BUSY          = -6,   /* Flash is currently busy with another operation */
+    FLASH_ERR_BUSY          = -6,   /* Flash is currently busy / already locked */
     FLASH_ERR_WRITE_FAIL    = -7,   /* WEL was not set or program verify failed */
     FLASH_ERR_HARDWARE      = -8    /* SFC / SPI controller hardware error */
 } FLASH_STATUS;
@@ -54,6 +61,7 @@ typedef enum
     FLASH_MODEL_W25Q512JV,              /* Winbond 512Mb */
     FLASH_MODEL_W25Q256JV,              /* Winbond 256Mb */
     FLASH_MODEL_GD25LQ64E,              /* GigaDevice 64Mb (1.8V) */
+    FLASH_MODEL_GD25LQ64E_PLUTO_SFC,    /* GigaDevice 64Mb + Pluto SFC variant */
     FLASH_MODEL_UNKNOWN
 } FLASH_MODEL;
 
@@ -109,6 +117,12 @@ typedef enum
 #define FLASH_READ_OPT_SFC              (0x00000001U)   /* Use SFC Memory-Mapped DMA */
 #define FLASH_READ_OPT_DMA              (0x00000002U)   /* Enable DMA controller */
 #define FLASH_READ_OPT_CRC              (0x00000004U)   /* Calculate & verify CRC */
+
+/******************************************************************************
+ * Init Options (Bitmask) - SW-013 / G7
+ ******************************************************************************/
+#define FLASH_INIT_OPT_NONE             (0x00000000U)
+#define FLASH_INIT_OPT_NO_RESET         (0x00000001U)   /* Skip SW reset (fast boot) */
 
 /******************************************************************************
  * Common Standard SPI NOR Flash Command Opcodes
@@ -169,6 +183,30 @@ typedef enum
 #define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* Writes SR1 and SR2 together (GD25LQ64E) */
 
 /******************************************************************************
+ * JEDEC ID / Family Matching
+ *   JEDEC ID = Manufacturer(8) | Memory Type(8) | Capacity(8).
+ *   "Same product family" ignores the capacity byte.
+ ******************************************************************************/
+#define FLASH_JEDEC_ID_MASK             (0x00FFFFFFU)
+#define FLASH_JEDEC_FAMILY_MASK         (0x00FFFF00U)
+
+/******************************************************************************
+ * Boot Settings Block (stored in Flash, loaded via basic read at boot)
+ ******************************************************************************/
+#define FLASH_BOOT_CFG_MAGIC            (0x46424F54UL)  /* "FBOT" */
+
+typedef struct
+{
+    uint32_t magic;             /* FLASH_BOOT_CFG_MAGIC */
+    uint32_t jedec_expect;      /* Expected JEDEC ID (family match allowed) */
+    uint32_t model;             /* FLASH_MODEL hint (optional lookup key) */
+    uint32_t features;          /* FLASH_FEAT_* operational flags */
+    uint16_t sfc_page_size;     /* SFC transfer page size: 2048 or 4096 */
+    uint16_t reserved;
+    uint32_t crc;               /* Checksum of the fields above */
+} FLASH_BOOT_CONFIG;
+
+/******************************************************************************
  * Read Configuration Descriptor (SFC & SPI)
  ******************************************************************************/
 typedef struct
@@ -219,6 +257,8 @@ typedef struct
     uint8_t             current_die;        /* Currently selected die index */
     bool                qe_enabled;         /* True if QE is verified enabled */
     uint16_t            sfc_page_size;      /* SFC DMA page size: 2048 or 4096 */
+    bool                locked;             /* Selection locked after boot (immutable) */
+    uint32_t            last_crc;           /* Accumulated CRC of last Flash_Read */
 } FLASH_HANDLE;
 
 /******************************************************************************
@@ -234,91 +274,124 @@ static inline bool Flash_IsAligned(uintptr_t val, uint32_t alignment_bytes)
     return ((val & (alignment_bytes - 1U)) == 0U);
 }
 
+/**
+ * @brief Return true if two JEDEC IDs belong to the same product family
+ *        (same manufacturer + memory type; capacity byte ignored).
+ */
+static inline bool Flash_FamilyMatch(uint32_t jedec_a, uint32_t jedec_b)
+{
+    return ((jedec_a & FLASH_JEDEC_FAMILY_MASK) == (jedec_b & FLASH_JEDEC_FAMILY_MASK));
+}
+
 /******************************************************************************
  * Public Driver APIs
  ******************************************************************************/
 
 /**
- * @brief  Initialize the Flash Driver.
+ * @brief  Compute the checksum for a boot settings block.
+ */
+uint32_t Flash_ConfigCrc(const FLASH_BOOT_CONFIG *cfg);
+
+/**
+ * @brief  Basic (safe) single-line Read Data (03h) that works on every device
+ *         before any QE / address-mode configuration is applied.
+ *         Used at boot to load the settings block.
+ * @param  addr: 32-bit Flash address (config block lives in low memory).
+ * @param  buf:  Destination buffer.
+ * @param  len:  Number of bytes to read.
+ */
+int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len);
+
+/**
+ * @brief  Boot-time initialization: ID response check -> basic-read settings
+ *         block -> configure from settings -> lock the selection.
+ *         On any mismatch / bad ID the driver enters a fail-safe error state.
+ * @param  config_addr: Flash address of the FLASH_BOOT_CONFIG block.
+ * @return FLASH_OK on success, or negative error code (fail-safe on failure).
+ */
+int Flash_BootInit(uint32_t config_addr);
+
+/**
+ * @brief  Boot-time initialization with options (e.g. FLASH_INIT_OPT_NO_RESET).
+ */
+int Flash_BootInitOpt(uint32_t config_addr, uint32_t options);
+
+/**
+ * @brief  Initialize the Flash Driver (auto-detect variant).
  *         Probes JEDEC ID via safe Single SPI mode, searches model table,
- *         configures address mode, verifies/enables QE bit, and readies SFC.
+ *         configures address mode, verifies/enables QE bit on every die.
  * @return FLASH_OK on success, or negative error code.
  */
 int Flash_Init(void);
 
 /**
+ * @brief  Auto-detect initialization with options (e.g. FLASH_INIT_OPT_NO_RESET).
+ */
+int Flash_InitOpt(uint32_t options);
+
+/**
  * @brief  Issue Software Reset to Flash (66h followed by 99h).
- * @return FLASH_OK on success, or negative error code.
  */
 int Flash_Reset(void);
 
 /**
  * @brief  Read 24-bit JEDEC ID using 9Fh opcode.
- * @param  p_jedec_id: Pointer to 32-bit variable receiving the 24-bit ID.
- * @return FLASH_OK on success, or negative error code.
  */
 int Flash_ReadJEDECID(uint32_t *p_jedec_id);
 
 /**
  * @brief  Read Status Register 1, 2, or 3.
- * @param  reg_idx: 1 (05h), 2 (35h), or 3 (15h).
- * @param  p_val: Pointer to receive the register byte.
- * @return FLASH_OK on success, or negative error code.
  */
 int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val);
 
 /**
- * @brief  Write Status Register.
- *         Handles 1-byte vs 2-byte (SR1+SR2) differences automatically.
- * @param  reg_idx: Status register index to write.
- * @param  val: New value for register.
- * @return FLASH_OK on success, or negative error code.
+ * @brief  Write Status Register (handles 1-byte vs 2-byte SR1+SR2 automatically).
  */
 int Flash_WriteStatus(uint8_t reg_idx, uint8_t val);
 
 /**
- * @brief  Send Write Enable instruction (06h) and verify WEL bit is set.
- * @return FLASH_OK on success, or negative error code.
+ * @brief  Clear all block-protect (BP) bits on the active die so that
+ *         program / erase cannot silently fail. Preserves QE and other bits.
+ *         (SW-013 / G2)
+ */
+int Flash_Unprotect(void);
+
+/**
+ * @brief  Set block-protect (BP) bits on the active die from a 4-bit mask
+ *         (BP3..BP0) to protect memory regions. Preserves QE and other bits.
+ *         (SW-013 / G2)
+ */
+int Flash_Protect(uint8_t bp_mask);
+
+/**
+ * @brief  Send Write Enable (06h) and verify WEL bit is set.
  */
 int Flash_WriteEnable(void);
 
 /**
- * @brief  Send Write Disable instruction (04h).
- * @return FLASH_OK on success, or negative error code.
+ * @brief  Send Write Disable (04h).
  */
 int Flash_WriteDisable(void);
 
 /**
  * @brief  Poll BUSY bit in Status Register 1 until clear or timeout.
- * @param  timeout_loops: Max iteration count for polling loop.
- * @return FLASH_OK if ready, FLASH_ERR_TIMEOUT if timed out.
  */
 int Flash_WaitBusy(uint32_t timeout_loops);
 
 /**
- * @brief  Verify and enable Quad Enable (QE) bit in status register if required.
- * @return FLASH_OK on success, or negative error code.
+ * @brief  Verify and enable Quad Enable (QE) bit on the active die.
  */
 int Flash_EnableQuad(void);
 
 /**
  * @brief  Select active die on multi-die stacked chips (W25M512).
- * @param  die_idx: Die index (0 or 1).
- * @return FLASH_OK on success, or negative error code.
  */
 int Flash_SelectDie(uint8_t die_idx);
 
 /**
- * @brief  Read data from Flash.
- *         Supports both direct SPI and TCON SFC Memory-Mapped DMA transfer.
- *         Access unit can be BYTE (1), HALFWORD (2), or WORD (4). Default is WORD (0 or 4).
- * @param  addr: 32-bit linear Flash address (must be aligned to unit size).
- * @param  buf: Destination buffer (must be aligned to unit size).
- * @param  count: Number of units to read (e.g. if unit is WORD, count=10 reads 10 words = 40 bytes).
- * @param  mode: Read mode (Single, Fast, Dual, Quad, etc.).
- * @param  unit: FLASH_READ_UNIT_BYTE, FLASH_READ_UNIT_HALFWORD, or FLASH_READ_UNIT_WORD (0 for default WORD).
- * @param  options: Bitmask of FLASH_READ_OPT_* flags.
- * @return FLASH_OK on success, or negative error code.
+ * @brief  Read data from Flash (direct SPI or SFC Memory-Mapped DMA).
+ *         When FLASH_READ_OPT_CRC is set, the CRC is accumulated across all
+ *         transfer chunks and can be retrieved with Flash_GetLastCRC().
  */
 int Flash_Read(uint32_t addr, void *buf, uint32_t count,
                FLASH_READ_MODE mode, FLASH_READ_UNIT unit,
@@ -326,23 +399,12 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 
 /**
  * @brief  Program data into Flash (Single 02h or Quad 32h).
- *         Automatically splits cross-boundary writes at 256-byte page boundaries
- *         and handles multi-die switching for W25M512.
- * @param  addr: 32-bit linear Flash address.
- * @param  buf: Source buffer containing data to write.
- * @param  len: Length in bytes.
- * @param  mode: FLASH_PROGRAM_SINGLE or FLASH_PROGRAM_QUAD.
- * @return FLASH_OK on success, or negative error code.
  */
 int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
                 FLASH_PROGRAM_MODE mode);
 
 /**
  * @brief  Erase Sector (4KB), Block (32KB/64KB), or Chip.
- *         Handles multi-die operations automatically.
- * @param  addr: Linear Flash address (ignored for CHIP erase).
- * @param  mode: FLASH_ERASE_SECTOR, BLOCK_32K, BLOCK_64K, or CHIP.
- * @return FLASH_OK on success, or negative error code.
  */
 int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode);
 
@@ -355,6 +417,16 @@ FLASH_STATE Flash_GetState(void);
  * @brief  Get pointer to active Flash model info (or NULL if not initialized).
  */
 const FLASH_INFO *Flash_GetInfo(void);
+
+/**
+ * @brief  Get the accumulated CRC of the last Flash_Read (with FLASH_READ_OPT_CRC).
+ */
+uint32_t Flash_GetLastCRC(void);
+
+/**
+ * @brief  Return true once the boot selection has been locked (immutable).
+ */
+bool Flash_IsLocked(void);
 
 #ifdef __cplusplus
 }

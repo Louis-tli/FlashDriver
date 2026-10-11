@@ -17,7 +17,7 @@ extern "C" {
 /******************************************************************************
  * Supported Flash Device Count
  ******************************************************************************/
-#define FLASH_TABLE_ENTRIES_COUNT   (7U)
+#define FLASH_TABLE_ENTRIES_COUNT   (8U)
 
 /******************************************************************************
  * ROM Model Table
@@ -34,6 +34,14 @@ extern const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT];
  * @return Pointer to const FLASH_INFO if found, or NULL if unsupported.
  */
 const FLASH_INFO *Flash_FindDevice(uint32_t jedec_id);
+
+/**
+ * @brief  Find Flash model descriptor by FLASH_MODEL (selects an exact variant,
+ *         e.g. GD25LQ64E_PLUTO_SFC vs GD25LQ64E when they share a JEDEC ID).
+ * @param  model_id: FLASH_MODEL enum value.
+ * @return Pointer to const FLASH_INFO if found, or NULL.
+ */
+const FLASH_INFO *Flash_FindDeviceByModel(FLASH_MODEL model_id);
 
 #ifdef __cplusplus
 }
