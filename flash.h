@@ -61,7 +61,6 @@ typedef enum
     FLASH_MODEL_W25Q512JV,              /* Winbond 512Mb */
     FLASH_MODEL_W25Q256JV,              /* Winbond 256Mb */
     FLASH_MODEL_GD25LQ64E,              /* GigaDevice 64Mb (1.8V) */
-    FLASH_MODEL_GD25LQ64E_PLUTO_SFC,    /* GigaDevice 64Mb + Pluto SFC variant */
     FLASH_MODEL_UNKNOWN
 } FLASH_MODEL;
 
@@ -156,6 +155,23 @@ typedef enum
 #define CMD_WINBOND_DIE_SELECT          (0xC2U) /* Winbond SpiStack Software Die Select */
 
 /******************************************************************************
+ * 4-Byte Address Command Variants (SW-013 / req 2)
+ *   Some devices use dedicated opcodes when addressing above 16MB (4-Byte
+ *   mode) instead of reusing the 3-Byte opcode after Enter-4-Byte-Mode (B7h).
+ ******************************************************************************/
+#define CMD_READ_4B                     (0x13U) /* Read Data (4-Byte) */
+#define CMD_FAST_READ_4B                (0x0CU) /* Fast Read (4-Byte) */
+#define CMD_DUAL_READ_4B                (0x3CU) /* Dual Output Read (4-Byte) */
+#define CMD_DUAL_IO_READ_4B             (0xBCU) /* Dual I/O Read (4-Byte) */
+#define CMD_QUAD_READ_4B                (0x6CU) /* Quad Output Read (4-Byte) */
+#define CMD_QUAD_IO_READ_4B             (0xECU) /* Quad I/O Read (4-Byte) */
+#define CMD_PAGE_PROGRAM_4B             (0x12U) /* Page Program (4-Byte) */
+#define CMD_QUAD_PAGE_PROGRAM_4B        (0x34U) /* Quad Page Program (4-Byte) */
+#define CMD_SECTOR_ERASE_4B             (0x21U) /* 4KB Sector Erase (4-Byte) */
+#define CMD_BLOCK_ERASE_32K_4B          (0x5CU) /* 32KB Block Erase (4-Byte) */
+#define CMD_BLOCK_ERASE_64K_4B          (0xDCU) /* 64KB Block Erase (4-Byte) */
+
+/******************************************************************************
  * Status Register 1 Bit Masks
  ******************************************************************************/
 #define FLASH_SR1_BUSY                  (1U << 0)   /* Erase/Write in progress */
@@ -211,7 +227,8 @@ typedef struct
  ******************************************************************************/
 typedef struct
 {
-    uint8_t command;            /* Read instruction opcode */
+    uint8_t command;            /* Read instruction opcode (3-Byte address) */
+    uint8_t command_4b;         /* Read instruction opcode (4-Byte address) */
     uint8_t dummy_cycles;       /* Dummy clocks required by Flash spec */
     uint8_t dummy_bytes;        /* Dummy bytes for SFC controller */
     uint8_t dummy_value;        /* Dummy byte value (0x00 or 0xFF) */

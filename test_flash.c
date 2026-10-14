@@ -216,6 +216,8 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 
         case CMD_PAGE_PROGRAM:       /* 02h */
         case CMD_QUAD_PAGE_PROGRAM:  /* 32h */
+        case CMD_PAGE_PROGRAM_4B:    /* 12h */
+        case CMD_QUAD_PAGE_PROGRAM_4B: /* 34h */
             if (s_mock.cmd_byte_index == 1U)
             {
                 s_mock.page_program_count++;
@@ -401,7 +403,7 @@ static void Test_SFCDMAReadSequence(void)
                         FLASH_READ_UNIT_DEFAULT,
                         FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA | FLASH_READ_OPT_CRC);
     assert(status == FLASH_OK);
-    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ);
+    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ_4B);  /* W25Q256JV is 4-Byte -> 0xEC */
     assert(g_p_sfc_regs->ADDR_SIZE == 4U);
     assert(g_p_sfc_regs->MODE == 4U);
     assert(g_p_sfc_regs->ACCESS_UNIT == 4U);
@@ -640,30 +642,36 @@ static void Test_WriteClearsBP(void)
     printf("  - Write succeeded and cleared BP bits. PASSED.\n\n");
 }
 
-static void Test_BootSelectsPlutoVariant(void)
+static void Test_AddrModeOpcodes(void)
 {
-    printf("[TEST 15] G5: boot config model selects GD25LQ64E_PLUTO_SFC...\n");
+    uint32_t buf[4];
+    printf("[TEST 15] Req2: 3-Byte vs 4-Byte opcode selection...\n");
 
+    /* 4-Byte device (W25Q256JV): Quad I/O read must use the 4B opcode (0xEC). */
     Mock_Reset();
-    s_mock.mock_jedec_id = 0xC86017U;
+    s_mock.mock_jedec_id = 0xEF4019U;
     Mock_SetStatus(0x00U, 0x02U, 0x00U);
-
-    FLASH_BOOT_CONFIG cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.magic        = FLASH_BOOT_CFG_MAGIC;
-    cfg.jedec_expect = 0xC86017U;
-    cfg.model        = (uint32_t)FLASH_MODEL_GD25LQ64E_PLUTO_SFC;
-    cfg.features     = FLASH_FEAT_QUAD;
-    cfg.sfc_page_size = 4096U;
-    cfg.crc          = Flash_ConfigCrc(&cfg);
-    memcpy(s_mock.config_buf, &cfg, sizeof(cfg));
-    s_mock.config_len = (uint32_t)sizeof(cfg);
-
-    int status = Flash_BootInit(0x00000000U);
+    int status = Flash_Init();
     assert(status == FLASH_OK);
-    assert(g_flash_handle.info != NULL);
-    assert(g_flash_handle.info->model_id == FLASH_MODEL_GD25LQ64E_PLUTO_SFC);
-    printf("  - Config model field selected the PLUTO_SFC variant. PASSED.\n\n");
+    status = Flash_Read(0x00001000U, buf, 4U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+    assert(status == FLASH_OK);
+    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ_4B);   /* 0xEC */
+    assert(g_p_sfc_regs->ADDR_SIZE == 4U);
+    printf("  - 4-Byte device used Quad I/O 4B opcode 0x%02X.\n", g_p_sfc_regs->CMD);
+
+    /* 3-Byte device (W25Q128JW): Quad I/O read must use the 3B opcode (0xEB). */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF6018U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    status = Flash_Init();
+    assert(status == FLASH_OK);
+    status = Flash_Read(0x00001000U, buf, 4U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+    assert(status == FLASH_OK);
+    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ);       /* 0xEB */
+    assert(g_p_sfc_regs->ADDR_SIZE == 3U);
+    printf("  - 3-Byte device used Quad I/O 3B opcode 0x%02X. PASSED.\n\n", g_p_sfc_regs->CMD);
 }
 
 static void Test_InitNoReset(void)
@@ -697,6 +705,9 @@ static void Test_TableReadCfgGuard(void)
     assert(w25q256 != NULL);
     assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].dummy_cycles == 8U);
     assert(w25q256->read_cfg[FLASH_READ_SINGLE].command == CMD_READ);
+    assert(w25q256->read_cfg[FLASH_READ_SINGLE].command_4b == CMD_READ_4B);
+    assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].command == CMD_QUAD_IO_READ);
+    assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].command_4b == CMD_QUAD_IO_READ_4B);
 
     const FLASH_INFO *gd = Flash_FindDevice(0xC86017U);
     assert(gd != NULL);
@@ -732,7 +743,7 @@ int main(void)
     Test_DirectSPIQuadGuard();
     Test_ProtectUnprotect();
     Test_WriteClearsBP();
-    Test_BootSelectsPlutoVariant();
+    Test_AddrModeOpcodes();
     Test_InitNoReset();
     Test_TableReadCfgGuard();
 

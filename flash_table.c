@@ -6,32 +6,34 @@
  * Note        : Stored in ROM (.rodata) to conserve Cortex-M0 SRAM.
  *
  * SW-013 / G6: read-mode configs that are identical across devices are built
- *              from shared READCFG() rows (common values defined once). Only
- *              the genuinely per-device differences (DUAL_IO / QUAD_IO dummy)
- *              are spelled out per entry.
+ *              from shared READCFG() rows. Each read mode carries both a
+ *              3-Byte and a 4-Byte opcode (req 2), since the instruction
+ *              differs with the active address width.
  ******************************************************************************/
 
 #include "flash_table.h"
 
 /******************************************************************************
  * Shared Read-Mode Config Builders (G6: common values defined once)
+ *   READCFG(3B opcode, 4B opcode, dummy_cycles, dummy_bytes, dummy_value,
+ *           dummy_last, mode_byte, io_width)
  ******************************************************************************/
-#define READCFG(_c,_dc,_db,_dv,_dl,_mb,_w)                              \
-    { .command = (_c), .dummy_cycles = (_dc), .dummy_bytes = (_db),      \
-      .dummy_value = (_dv), .dummy_last = (_dl), .mode_byte = (_mb),     \
-      .io_width = (_w) }
+#define READCFG(_c,_c4,_dc,_db,_dv,_dl,_mb,_w)                          \
+    { .command = (_c), .command_4b = (_c4), .dummy_cycles = (_dc),      \
+      .dummy_bytes = (_db), .dummy_value = (_dv), .dummy_last = (_dl),   \
+      .mode_byte = (_mb), .io_width = (_w) }
 
-/* Identical on every supported device */
-#define RC_SINGLE       READCFG(CMD_READ,         0U, 0U, 0x00U, 0x00U, 0x00U, 1U)
-#define RC_FAST         READCFG(CMD_FAST_READ,    8U, 1U, 0xFFU, 0xFFU, 0x00U, 1U)
-#define RC_DUAL         READCFG(CMD_DUAL_READ,    8U, 1U, 0xFFU, 0xFFU, 0x00U, 2U)
-#define RC_QUAD         READCFG(CMD_QUAD_READ,    8U, 1U, 0xFFU, 0xFFU, 0x00U, 4U)
+/* Identical on every supported device (opcodes: 3B / 4B) */
+#define RC_SINGLE       READCFG(CMD_READ,      CMD_READ_4B,      0U, 0U, 0x00U, 0x00U, 0x00U, 1U)
+#define RC_FAST         READCFG(CMD_FAST_READ, CMD_FAST_READ_4B, 8U, 1U, 0xFFU, 0xFFU, 0x00U, 1U)
+#define RC_DUAL         READCFG(CMD_DUAL_READ, CMD_DUAL_READ_4B, 8U, 1U, 0xFFU, 0xFFU, 0x00U, 2U)
+#define RC_QUAD         READCFG(CMD_QUAD_READ, CMD_QUAD_READ_4B, 8U, 1U, 0xFFU, 0xFFU, 0x00U, 4U)
 
-/* Per-device variations */
-#define RC_DUAL_IO      READCFG(CMD_DUAL_IO_READ, 4U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* default */
-#define RC_DUAL_IO_GD   READCFG(CMD_DUAL_IO_READ, 6U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* GD25LQ64E */
-#define RC_QUAD_IO_8    READCFG(CMD_QUAD_IO_READ, 8U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 8 */
-#define RC_QUAD_IO_6    READCFG(CMD_QUAD_IO_READ, 6U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 6 */
+/* Per-device timing variations */
+#define RC_DUAL_IO      READCFG(CMD_DUAL_IO_READ, CMD_DUAL_IO_READ_4B, 4U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* default */
+#define RC_DUAL_IO_GD   READCFG(CMD_DUAL_IO_READ, CMD_DUAL_IO_READ_4B, 6U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* GD25LQ64E */
+#define RC_QUAD_IO_8    READCFG(CMD_QUAD_IO_READ, CMD_QUAD_IO_READ_4B, 8U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 8 */
+#define RC_QUAD_IO_6    READCFG(CMD_QUAD_IO_READ, CMD_QUAD_IO_READ_4B, 6U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 6 */
 
 /******************************************************************************
  * ROM Table containing configurations for supported SPI NOR Flash models
@@ -225,36 +227,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_QUAD]    = RC_QUAD,
             [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
         }
-    },
-
-    /* ------------------------------------------------------------------------
-     * [7] GD25LQ64E_PLUTO_SFC (same chip as [6]; Pluto SoC SFC variant).
-     *     Shares the GD25LQ64E silicon and command set; only the TCON/Pluto SFC
-     *     transfer timing differs. Selected explicitly via the boot config model
-     *     field (both entries share JEDEC 0xC86017).
-     * ------------------------------------------------------------------------ */
-    [7] = {
-        .name         = "GD25LQ64E (Pluto SFC)",
-        .jedec_id     = 0xC86017U,
-        .model_id     = FLASH_MODEL_GD25LQ64E_PLUTO_SFC,
-        .flash_size   = 8U * 1024U * 1024U,
-        .page_size    = 256U,
-        .sector_size  = 4096U,
-        .block_size   = 65536U,
-        .addr_bytes   = 3U,
-        .qe_reg       = 2U,
-        .qe_bit       = 1U,
-        .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE,
-        .die_count    = 1U,
-        .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
-        }
     }
 };
 
@@ -277,7 +249,7 @@ const FLASH_INFO *Flash_FindDevice(uint32_t jedec_id)
 
 const FLASH_INFO *Flash_FindDeviceByModel(FLASH_MODEL model_id)
 {
-    /* First entry with the requested model (disambiguates shared-JEDEC variants) */
+    /* First entry with the requested model */
     for (uint32_t i = 0U; i < FLASH_TABLE_ENTRIES_COUNT; i++)
     {
         if (g_flash_table[i].model_id == model_id)

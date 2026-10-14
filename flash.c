@@ -12,6 +12,7 @@
 #include "flash_table.h"
 #include "flash_spi.h"
 #include "flash_sfc.h"
+#include "flash_cmd.h"
 
 /******************************************************************************
  * Global Runtime Handle Instance (Allocated in SRAM)
@@ -710,6 +711,64 @@ int Flash_SelectDie(uint8_t die_idx)
 }
 
 /******************************************************************************
+ * Helpers: per-chunk read paths (SW-013 / req 3 functionization)
+ ******************************************************************************/
+static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_len,
+                              uint32_t effective_unit, FLASH_READ_UNIT unit,
+                              const FLASH_READ_CFG *read_cfg, const FLASH_INFO *info,
+                              bool use_crc)
+{
+    /* SFC safe-read sequence: single mode -> wait ready -> target mode -> DMA */
+    Flash_SFC_SetSingleMode();
+
+    int status = Flash_WaitBusy(100000U);
+    if (status != FLASH_OK)
+    {
+        return status;
+    }
+
+    Flash_SFC_SetReadConfig(read_cfg, info->addr_bytes);
+
+    const uint32_t chunk_count = chunk_len / effective_unit;
+    uint32_t crc_val = 0U;
+    return Flash_SFC_DMARead(die_addr, p_buf, chunk_count, unit, use_crc, &crc_val);
+}
+
+static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_len,
+                                 const FLASH_READ_CFG *read_cfg, const FLASH_INFO *info)
+{
+    /* Direct SPI path is single-width only (Dual/Quad require SFC). */
+    if (read_cfg->io_width > 1U)
+    {
+        return FLASH_ERR_PARAM;
+    }
+
+    int status = Flash_WaitBusy(100000U);
+    if (status != FLASH_OK)
+    {
+        return status;
+    }
+
+    Flash_SPI_CS_Low();
+    (void)Flash_SPI_TransferByte(Flash_CmdRead(read_cfg, info->addr_bytes));
+    Flash_SPI_SendAddr(die_addr, info->addr_bytes);
+
+    if (read_cfg->mode_byte != 0x00U)
+    {
+        (void)Flash_SPI_TransferByte(read_cfg->mode_byte);
+    }
+    for (uint32_t i = 0U; i < read_cfg->dummy_bytes; i++)
+    {
+        (void)Flash_SPI_TransferByte(read_cfg->dummy_value);
+    }
+
+    Flash_SPI_ReadData(p_buf, chunk_len);
+    Flash_SPI_CS_High();
+
+    return FLASH_OK;
+}
+
+/******************************************************************************
  * Public API: Flash_Read
  ******************************************************************************/
 int Flash_Read(uint32_t addr, void *buf, uint32_t count,
@@ -796,65 +855,19 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
             }
         }
 
-        /* Branch: TCON SFC Memory-Mapped DMA Read Path */
+        /* Execute the transfer via the appropriate per-chunk read path */
         if ((options & FLASH_READ_OPT_SFC) != 0U)
         {
-            /* Step 1: Configure SFC to Single Mode */
-            Flash_SFC_SetSingleMode();
-
-            /* Step 2: Poll Flash Status via SPI until BUSY=0 */
-            status = Flash_WaitBusy(100000U);
-            if (status != FLASH_OK)
-            {
-                return status;
-            }
-
-            /* Step 3: Reconfigure SFC to target high-speed Read Mode */
-            Flash_SFC_SetReadConfig(read_cfg, info->addr_bytes);
-
-            /* Step 4: Execute Memory-Mapped DMA transfer (accumulates CRC) */
-            const uint32_t chunk_count = chunk_len / (uint32_t)effective_unit;
-            uint32_t crc_val = 0U;
-            status = Flash_SFC_DMARead(die_addr, p_buf, chunk_count,
-                                       unit,
-                                       use_crc,
-                                       &crc_val);
-            if (status != FLASH_OK)
-            {
-                return status;
-            }
+            status = Flash_ReadChunkSFC(die_addr, p_buf, chunk_len, (uint32_t)effective_unit,
+                                        unit, read_cfg, info, use_crc);
         }
         else
         {
-            /* Branch: Direct SPI Read Path (single-width only; Dual/Quad need SFC) */
-            if (read_cfg->io_width > 1U)
-            {
-                /* Refuse to silently read wrong data on a single-line bus. */
-                return FLASH_ERR_PARAM;
-            }
-
-            status = Flash_WaitBusy(100000U);
-            if (status != FLASH_OK)
-            {
-                return status;
-            }
-
-            Flash_SPI_CS_Low();
-            (void)Flash_SPI_TransferByte(read_cfg->command);
-            Flash_SPI_SendAddr(die_addr, info->addr_bytes);
-
-            if (read_cfg->mode_byte != 0x00U)
-            {
-                (void)Flash_SPI_TransferByte(read_cfg->mode_byte);
-            }
-
-            for (uint32_t i = 0U; i < read_cfg->dummy_bytes; i++)
-            {
-                (void)Flash_SPI_TransferByte(read_cfg->dummy_value);
-            }
-
-            Flash_SPI_ReadData(p_buf, chunk_len);
-            Flash_SPI_CS_High();
+            status = Flash_ReadChunkDirect(die_addr, p_buf, chunk_len, read_cfg, info);
+        }
+        if (status != FLASH_OK)
+        {
+            return status;
         }
 
         current_addr += chunk_len;
@@ -888,7 +901,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         return FLASH_ERR_PARAM;
     }
 
-    const uint8_t prog_cmd = (mode == FLASH_PROGRAM_QUAD) ? CMD_QUAD_PAGE_PROGRAM : CMD_PAGE_PROGRAM;
+    const uint8_t prog_cmd = Flash_CmdProgram(mode, info->addr_bytes);
     const uint8_t *p_src = (const uint8_t *)buf;
     uint32_t remaining = len;
     uint32_t current_addr = addr;
@@ -1064,20 +1077,10 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return status;
     }
 
-    uint8_t erase_cmd;
-    switch (mode)
+    const uint8_t erase_cmd = Flash_CmdErase(mode, info->addr_bytes);
+    if (erase_cmd == 0x00U)
     {
-        case FLASH_ERASE_SECTOR:
-            erase_cmd = CMD_SECTOR_ERASE;       /* 20h */
-            break;
-        case FLASH_ERASE_BLOCK_32K:
-            erase_cmd = CMD_BLOCK_ERASE_32K;    /* 52h */
-            break;
-        case FLASH_ERASE_BLOCK_64K:
-            erase_cmd = CMD_BLOCK_ERASE_64K;    /* D8h */
-            break;
-        default:
-            return FLASH_ERR_PARAM;
+        return FLASH_ERR_PARAM;
     }
 
     status = Flash_WaitBusy(200000U);
