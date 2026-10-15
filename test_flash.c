@@ -53,6 +53,7 @@ static void Mock_Reset(void)
 
     g_flash_handle.info          = NULL;
     g_flash_handle.state         = FLASH_STATE_UNINIT;
+    g_flash_handle.addr_mode     = FLASH_ADDR_MODE_DEFAULT;
     g_flash_handle.current_die   = 0U;
     g_flash_handle.qe_enabled    = false;
     g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
@@ -81,7 +82,7 @@ static void Mock_SetBootConfig(uint32_t jedec_expect, uint16_t sfc_page, uint32_
     cfg.model        = (uint32_t)FLASH_MODEL_UNKNOWN;   /* fall back to JEDEC lookup */
     cfg.features     = features;
     cfg.sfc_page_size = sfc_page;
-    cfg.reserved     = 0U;
+    cfg.addr_mode    = (uint8_t)FLASH_ADDR_MODE_DEFAULT;
     cfg.crc          = Flash_ConfigCrc(&cfg);
     memcpy(s_mock.config_buf, &cfg, sizeof(cfg));
     s_mock.config_len = (uint32_t)sizeof(cfg);
@@ -528,7 +529,7 @@ static void Test_BootNoConnect(void)
 
 static void Test_MultiDiePerDieConfig(void)
 {
-    printf("[TEST 10] G1: per-die QE + 4-Byte mode applied on BOTH dies...\n");
+    printf("[TEST 10] G1: per-die QE applied on BOTH dies...\n");
 
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF6119U;                 /* W25M512 (2-die) */
@@ -538,12 +539,10 @@ static void Test_MultiDiePerDieConfig(void)
     assert(status == FLASH_OK);
     assert(g_flash_handle.info->model_id == FLASH_MODEL_W25M512);
 
-    /* Both dies must now have QE set and 4-Byte mode entered. */
+    /* Both dies must now have QE set (each die has its own status regs). */
     assert((s_mock.sr2[0] & FLASH_SR2_QE_WINBOND) != 0U);
     assert((s_mock.sr2[1] & FLASH_SR2_QE_WINBOND) != 0U);
-    assert(s_mock.entered_4byte[0] == true);
-    assert(s_mock.entered_4byte[1] == true);
-    printf("  - Die 0 and Die 1 both: QE enabled, 4-Byte mode entered. PASSED.\n\n");
+    printf("  - Die 0 and Die 1 both: QE enabled. PASSED.\n\n");
 }
 
 static void Test_CRCAccumulate(void)
@@ -671,7 +670,32 @@ static void Test_AddrModeOpcodes(void)
     assert(status == FLASH_OK);
     assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ);       /* 0xEB */
     assert(g_p_sfc_regs->ADDR_SIZE == 3U);
-    printf("  - 3-Byte device used Quad I/O 3B opcode 0x%02X. PASSED.\n\n", g_p_sfc_regs->CMD);
+    printf("  - 3-Byte device used Quad I/O 3B opcode 0x%02X.\n", g_p_sfc_regs->CMD);
+
+    /* Method B (Enter-4-Byte via B7h): same 3B opcode + 4B address + B7h sent. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;                 /* W25Q256JV */
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    FLASH_BOOT_CONFIG cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.magic         = FLASH_BOOT_CFG_MAGIC;
+    cfg.jedec_expect  = 0xEF4019U;
+    cfg.model         = (uint32_t)FLASH_MODEL_UNKNOWN;
+    cfg.features      = FLASH_FEAT_QUAD;
+    cfg.sfc_page_size = 4096U;
+    cfg.addr_mode     = (uint8_t)FLASH_ADDR_4BYTE_ENTER;
+    cfg.crc           = Flash_ConfigCrc(&cfg);
+    memcpy(s_mock.config_buf, &cfg, sizeof(cfg));
+    s_mock.config_len = (uint32_t)sizeof(cfg);
+    status = Flash_BootInit(0x00000000U);
+    assert(status == FLASH_OK);
+    status = Flash_Read(0x00001000U, buf, 4U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+    assert(status == FLASH_OK);
+    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ);       /* 0xEB (3B opcode) */
+    assert(g_p_sfc_regs->ADDR_SIZE == 4U);
+    assert(s_mock.entered_4byte[0] == true);             /* B7h sent */
+    printf("  - Method B (Enter-4B) used 3B opcode 0x%02X + sent B7h. PASSED.\n\n", g_p_sfc_regs->CMD);
 }
 
 static void Test_InitNoReset(void)

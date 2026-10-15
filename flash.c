@@ -21,6 +21,7 @@ FLASH_HANDLE g_flash_handle =
 {
     .info          = NULL,
     .state         = FLASH_STATE_UNINIT,
+    .addr_mode     = FLASH_ADDR_MODE_DEFAULT,
     .current_die   = 0U,
     .qe_enabled    = false,
     .sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K,
@@ -76,6 +77,19 @@ static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
 }
 
 /******************************************************************************
+ * Helper: Resolve the active addressing mode (boot-config override or default)
+ ******************************************************************************/
+static FLASH_ADDR_MODE Flash_ResolveAddrMode(uint8_t cfg_mode, const FLASH_INFO *info)
+{
+    if (cfg_mode == (uint8_t)FLASH_ADDR_MODE_DEFAULT)
+    {
+        /* Default: derive from the device's native width (Method A for 4-Byte). */
+        return (info->addr_bytes == 4U) ? FLASH_ADDR_4BYTE_OPCODE : FLASH_ADDR_3BYTE;
+    }
+    return (FLASH_ADDR_MODE)cfg_mode;
+}
+
+/******************************************************************************
  * Helper: Apply non-common config to the ACTIVE die (4-Byte mode + QE).
  *   Every die of a multi-die stack has its own status registers, so this must
  *   run once per die (SW-013 / G1).
@@ -88,8 +102,8 @@ static int Flash_ApplyDieConfig(void)
         return FLASH_ERR_PARAM;
     }
 
-    /* Configure 4-Byte Address Mode if this device requires it */
-    if (info->addr_bytes == 4U)
+    /* Enter-4-Byte mode (B7h) is only needed for Method B (FLASH_ADDR_4BYTE_ENTER). */
+    if (Flash_CmdNeedsEnter4b(g_flash_handle.addr_mode))
     {
         Flash_SPI_SendCmd(CMD_ENTER_4BYTE_ADDR);
         (void)Flash_WaitBusy(10000U);
@@ -260,6 +274,7 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
 
     /* 8. Configure from the settings block + product descriptor */
     g_flash_handle.info         = p_info;
+    g_flash_handle.addr_mode    = Flash_ResolveAddrMode(cfg.addr_mode, p_info);
     g_flash_handle.current_die  = 0U;
     g_flash_handle.qe_enabled   = false;
     g_flash_handle.last_crc     = 0U;
@@ -338,6 +353,7 @@ int Flash_InitOpt(uint32_t options)
 
     /* Populate runtime handle */
     g_flash_handle.info         = p_info;
+    g_flash_handle.addr_mode    = Flash_ResolveAddrMode((uint8_t)FLASH_ADDR_MODE_DEFAULT, p_info);
     g_flash_handle.current_die  = 0U;
     g_flash_handle.qe_enabled   = false;
     g_flash_handle.last_crc     = 0U;
@@ -715,7 +731,7 @@ int Flash_SelectDie(uint8_t die_idx)
  ******************************************************************************/
 static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_len,
                               uint32_t effective_unit, FLASH_READ_UNIT unit,
-                              const FLASH_READ_CFG *read_cfg, const FLASH_INFO *info,
+                              const FLASH_READ_CFG *read_cfg,
                               bool use_crc)
 {
     /* SFC safe-read sequence: single mode -> wait ready -> target mode -> DMA */
@@ -727,7 +743,7 @@ static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_
         return status;
     }
 
-    Flash_SFC_SetReadConfig(read_cfg, info->addr_bytes);
+    Flash_SFC_SetReadConfig(read_cfg, g_flash_handle.addr_mode);
 
     const uint32_t chunk_count = chunk_len / effective_unit;
     uint32_t crc_val = 0U;
@@ -735,7 +751,7 @@ static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_
 }
 
 static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_len,
-                                 const FLASH_READ_CFG *read_cfg, const FLASH_INFO *info)
+                                 const FLASH_READ_CFG *read_cfg)
 {
     /* Direct SPI path is single-width only (Dual/Quad require SFC). */
     if (read_cfg->io_width > 1U)
@@ -750,8 +766,8 @@ static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chu
     }
 
     Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(Flash_CmdRead(read_cfg, info->addr_bytes));
-    Flash_SPI_SendAddr(die_addr, info->addr_bytes);
+    (void)Flash_SPI_TransferByte(Flash_CmdRead(read_cfg, g_flash_handle.addr_mode));
+    Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
 
     if (read_cfg->mode_byte != 0x00U)
     {
@@ -859,11 +875,11 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         if ((options & FLASH_READ_OPT_SFC) != 0U)
         {
             status = Flash_ReadChunkSFC(die_addr, p_buf, chunk_len, (uint32_t)effective_unit,
-                                        unit, read_cfg, info, use_crc);
+                                        unit, read_cfg, use_crc);
         }
         else
         {
-            status = Flash_ReadChunkDirect(die_addr, p_buf, chunk_len, read_cfg, info);
+            status = Flash_ReadChunkDirect(die_addr, p_buf, chunk_len, read_cfg);
         }
         if (status != FLASH_OK)
         {
@@ -901,7 +917,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         return FLASH_ERR_PARAM;
     }
 
-    const uint8_t prog_cmd = Flash_CmdProgram(mode, info->addr_bytes);
+    const uint8_t prog_cmd = Flash_CmdProgram(mode, g_flash_handle.addr_mode);
     const uint8_t *p_src = (const uint8_t *)buf;
     uint32_t remaining = len;
     uint32_t current_addr = addr;
@@ -961,7 +977,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         /* 3. Send Program Command + Address + Data */
         Flash_SPI_CS_Low();
         (void)Flash_SPI_TransferByte(prog_cmd);
-        Flash_SPI_SendAddr(die_addr, info->addr_bytes);
+        Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
 
         if (mode == FLASH_PROGRAM_QUAD)
         {
@@ -1077,7 +1093,7 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return status;
     }
 
-    const uint8_t erase_cmd = Flash_CmdErase(mode, info->addr_bytes);
+    const uint8_t erase_cmd = Flash_CmdErase(mode, g_flash_handle.addr_mode);
     if (erase_cmd == 0x00U)
     {
         return FLASH_ERR_PARAM;
@@ -1097,7 +1113,7 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
 
     Flash_SPI_CS_Low();
     (void)Flash_SPI_TransferByte(erase_cmd);
-    Flash_SPI_SendAddr(die_addr, info->addr_bytes);
+    Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
     Flash_SPI_CS_High();
 
     return Flash_WaitBusy(2000000U);

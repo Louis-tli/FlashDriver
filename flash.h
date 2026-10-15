@@ -218,9 +218,21 @@ typedef struct
     uint32_t model;             /* FLASH_MODEL hint (optional lookup key) */
     uint32_t features;          /* FLASH_FEAT_* operational flags */
     uint16_t sfc_page_size;     /* SFC transfer page size: 2048 or 4096 */
-    uint16_t reserved;
+    uint8_t  addr_mode;         /* FLASH_ADDR_MODE (0 = default from table) */
+    uint8_t  reserved8;
     uint32_t crc;               /* Checksum of the fields above */
 } FLASH_BOOT_CONFIG;
+
+/******************************************************************************
+ * Addressing Mode (SW-013: boot-config selectable) — req 2
+ ******************************************************************************/
+typedef enum
+{
+    FLASH_ADDR_MODE_DEFAULT     = 0,  /* derive from the device table addr_bytes */
+    FLASH_ADDR_3BYTE,                 /* 3-Byte opcodes + 3-Byte address */
+    FLASH_ADDR_4BYTE_OPCODE,          /* dedicated 4-Byte opcodes + 4B address (Method A) */
+    FLASH_ADDR_4BYTE_ENTER            /* Enter-4B (B7h) + 3-Byte opcodes + 4B address (Method B) */
+} FLASH_ADDR_MODE;
 
 /******************************************************************************
  * Read Configuration Descriptor (SFC & SPI)
@@ -271,6 +283,7 @@ typedef struct
 {
     const FLASH_INFO   *info;               /* Pointer to active flash model in ROM */
     FLASH_STATE         state;              /* Current driver state */
+    FLASH_ADDR_MODE     addr_mode;          /* Active addressing mode (resolved) */
     uint8_t             current_die;        /* Currently selected die index */
     bool                qe_enabled;         /* True if QE is verified enabled */
     uint16_t            sfc_page_size;      /* SFC DMA page size: 2048 or 4096 */

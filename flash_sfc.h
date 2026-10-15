@@ -82,9 +82,9 @@ void Flash_SFC_SetSingleMode(void);
 /**
  * @brief Configure SFC IP registers for target high-speed Read Mode.
  * @param cfg: Pointer to FLASH_READ_CFG.
- * @param addr_bytes: 3 or 4.
+ * @param mode: Active FLASH_ADDR_MODE (selects opcode set + address width).
  */
-void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, uint8_t addr_bytes);
+void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode);
 
 /**
  * @brief Perform Memory-Mapped DMA Read through SFC IP.

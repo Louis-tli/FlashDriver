@@ -1,12 +1,12 @@
 /******************************************************************************
  * File Name   : flash_cmd.h
- * Description : SPI NOR Flash Command Opcode Resolution (3-Byte / 4-Byte)
+ * Description : SPI NOR Flash Command Opcode Resolution & Addressing Mode
  * Target Core : ARM Cortex-M0 (ARMv6-M)
  * Compiler    : ARMCC (ARM Compiler 5) / ARMCLANG / GCC (C99 Compatible)
  *
- * SW-013 / req 2 & 3: command selection is factored into its own module so the
- *   3-Byte vs 4-Byte opcode choice lives in one place. Read opcodes come from
- *   the per-device FLASH_READ_CFG; program/erase opcodes use the standard set.
+ * SW-013 / req 2 & 3: command selection is factored into its own module. The
+ *   active FLASH_ADDR_MODE decides the address width, which opcode set to use
+ *   (3-Byte vs dedicated 4-Byte), and whether Enter-4-Byte (B7h) is needed.
  ******************************************************************************/
 
 #ifndef __FLASH_CMD_H__
@@ -19,22 +19,34 @@ extern "C" {
 #endif
 
 /**
- * @brief  Resolve the read opcode for a read mode given the active address width.
- * @param  cfg: Per-device read configuration (holds 3B and 4B opcodes).
- * @param  addr_bytes: 3 or 4.
- * @return The opcode for the current address width.
+ * @brief  Address width (3 or 4 bytes) for the given addressing mode.
  */
-uint8_t Flash_CmdRead(const FLASH_READ_CFG *cfg, uint8_t addr_bytes);
+uint8_t Flash_CmdAddrBytes(FLASH_ADDR_MODE mode);
 
 /**
- * @brief  Resolve the page-program opcode for the given program mode + width.
+ * @brief  True when the mode uses dedicated 4-Byte opcodes (Method A).
  */
-uint8_t Flash_CmdProgram(FLASH_PROGRAM_MODE mode, uint8_t addr_bytes);
+bool Flash_CmdUse4bOpcode(FLASH_ADDR_MODE mode);
 
 /**
- * @brief  Resolve the erase opcode for the given erase mode + width.
+ * @brief  True when the mode requires an Enter-4-Byte (B7h) sequence (Method B).
  */
-uint8_t Flash_CmdErase(FLASH_ERASE_MODE mode, uint8_t addr_bytes);
+bool Flash_CmdNeedsEnter4b(FLASH_ADDR_MODE mode);
+
+/**
+ * @brief  Resolve the read opcode for a read config + addressing mode.
+ */
+uint8_t Flash_CmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode);
+
+/**
+ * @brief  Resolve the page-program opcode for the given program + addressing mode.
+ */
+uint8_t Flash_CmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode);
+
+/**
+ * @brief  Resolve the erase opcode for the given erase + addressing mode.
+ */
+uint8_t Flash_CmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode);
 
 #ifdef __cplusplus
 }
