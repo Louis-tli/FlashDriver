@@ -433,22 +433,20 @@ int Flash_WriteEnable(void)
 
 /******************************************************************************
  * Public API: Flash_WriteEnableVolatile (50h)
+ *
+ * Datasheet rule (Winbond W25Q / GigaDevice GD25LQ series):
+ *   "The Write Enable for Volatile Status Register command will not set the
+ *    Write Enable Latch (WEL) bit, it is only valid for the Write Status
+ *    Register command to change the volatile Status Register bit values."
+ *   -> 50h arms ONLY the immediately following WRSR; any intervening
+ *      command (including a status poll) clears it. Therefore this function
+ *      deliberately does NOT poll WEL — it would fail (WEL stays 0) and the
+ *      poll itself would consume the volatile enable (SW-013 WEL fix).
  ******************************************************************************/
 int Flash_WriteEnableVolatile(void)
 {
-    for (uint32_t retry = 0U; retry < 5U; retry++) {
-        Flash_SPI_SendCmd(F_CMD_VSR_WREN);
-
-        uint8_t sr1 = 0U;
-        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK) {
-            if ((sr1 & FLASH_SR1_WEL) != 0U) {
-                return FLASH_OK;
-            }
-        }
-        Flash_DelayUs(10U);     /* WEL poll backoff (SW-014: was 100 loops) */
-    }
-
-    return FLASH_ERR_WRITE_FAIL;
+    Flash_SPI_SendCmd(F_CMD_VSR_WREN);
+    return FLASH_OK;
 }
 
 /******************************************************************************

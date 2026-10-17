@@ -45,6 +45,13 @@ typedef struct
     /* Write-enable variant counters: 06h (WREN) vs 50h (VSR_WREN) */
     uint32_t wren_count;
     uint32_t vsr_wren_count;
+
+    /* SW-013 WEL fix: 50h arms ONLY the next WRSR and does NOT set WEL
+     * (Winbond W25Q / GigaDevice GD25LQ datasheets). Intervening commands
+     * clear the pending volatile enable. WRSR is accepted only when WEL is
+     * set (06h) or a 50h is pending. */
+    bool     vsr_wren_pending;
+    bool     wrsr_accepted;
 } MOCK_SPI_STATE;
 
 static MOCK_SPI_STATE s_mock;
@@ -127,11 +134,22 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
         s_mock.current_cmd = tx_byte;
         s_mock.cmd_byte_index = 1U;
 
+        /* SW-013 WEL fix: model datasheet semantics — WRSR is accepted only
+         * with WEL (06h) or a pending 50h; anything else clears the 50h. */
+        if ((tx_byte == F_CMD_WRSR1) || (tx_byte == F_CMD_WRSR2) || (tx_byte == F_CMD_WRSR3)) {
+            s_mock.wrsr_accepted = (((s_mock.sr1[s_mock.current_die] & FLASH_SR1_WEL) != 0U) ||
+                                    s_mock.vsr_wren_pending);
+            s_mock.vsr_wren_pending = false;
+        }
+        else if (tx_byte != F_CMD_VSR_WREN) {
+            s_mock.vsr_wren_pending = false;
+        }
+
         if (tx_byte == F_CMD_WREN) {
             s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
             s_mock.wren_count++;
         } else if (tx_byte == F_CMD_VSR_WREN) {
-            s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
+            s_mock.vsr_wren_pending = true;   /* WEL stays 0 (datasheet) */
             s_mock.vsr_wren_count++;
         }
         else if (tx_byte == F_CMD_WRDI) {
@@ -182,6 +200,9 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             break;
 
         case F_CMD_WRSR1: /* 01h : 1-byte (SR1) or 2-byte (SR1+SR2) */
+            if (!s_mock.wrsr_accepted) {
+                break;                      /* chip rejects: no WEL, no pending 50h */
+            }
             if (s_mock.cmd_byte_index == 1U) {
                 s_mock.sr1[s_mock.current_die] = tx_byte;
                 s_mock.cmd_byte_index++;
@@ -193,6 +214,9 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             break;
 
         case F_CMD_WRSR2: /* 31h */
+            if (!s_mock.wrsr_accepted) {
+                break;                      /* chip rejects: no WEL, no pending 50h */
+            }
             s_mock.sr2[s_mock.current_die] = tx_byte;
             break;
 
@@ -938,6 +962,45 @@ static void Test_DelayUsConversion(void)
     printf("  - Time-based delay API verified. PASSED.\n");
 }
 
+static void Test_VsrWrenNoWel(void)
+{
+    uint8_t sr = 0U;
+
+    printf("[TEST 23] 50h does NOT set WEL - volatile SR write (datasheet)...\n");
+
+    /* GD25LQ64E datasheet 7.5: "The Write Enable for Volatile Status Register
+     * command will not set the Write Enable Latch bit, it is only valid for
+     * the Write Status Register command". Winbond W25Q series is identical. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+
+    s_mock.wren_count = 0U; s_mock.vsr_wren_count = 0U;   /* init may enable QE */
+    assert(Flash_WriteEnableVolatile() == FLASH_OK);
+    assert((s_mock.sr1[0] & FLASH_SR1_WEL) == 0U);      /* WEL must stay 0 */
+    assert(s_mock.vsr_wren_count == 1U && s_mock.wren_count == 0U);
+    printf("  - GD25LQ64E: 50h issued, WEL remains 0. PASSED.\n");
+
+    /* Volatile SR2 write must succeed with WEL=0 via the pending 50h */
+    s_mock.wren_count = 0U; s_mock.vsr_wren_count = 0U;
+    assert(Flash_WriteStatus(2U, 0x02U) == FLASH_OK);
+    assert(s_mock.sr2[0] == 0x02U);
+    assert((s_mock.sr1[0] & FLASH_SR1_WEL) == 0U);
+    assert(s_mock.vsr_wren_count == 1U && s_mock.wren_count == 0U);
+    printf("  - Volatile WRSR accepted with WEL=0 (pending 50h). PASSED.\n");
+
+    /* GD rule: an intervening command clears the pending 50h */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_WriteEnableVolatile() == FLASH_OK);
+    assert(Flash_ReadStatus(1U, &sr) == FLASH_OK);
+    assert(s_mock.vsr_wren_pending == false);
+    printf("  - Intervening command clears pending 50h. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -968,9 +1031,10 @@ int main(void)
     Test_CrcAlgoBootSelect();
     Test_EasyApi();
     Test_DelayUsConversion();
+    Test_VsrWrenNoWel();
 
     printf("================================================================\n");
-    printf(" ALL 22 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 23 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

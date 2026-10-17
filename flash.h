@@ -417,7 +417,9 @@ int Flash_Protect(uint8_t bp_mask);
 int Flash_WriteEnable(void);
 
 /**
- * @brief  Send Volatile Status-Register Write Enable (50h) and verify WEL.
+ * @brief  Send Volatile Status-Register Write Enable (50h).
+ *         Datasheet: 50h does NOT set WEL and is valid ONLY for the
+ *         immediately following WRSR — no commands may be inserted between.
  *         Used for volatile SR writes (e.g. QE) when the device supports it.
  */
 int Flash_WriteEnableVolatile(void);
