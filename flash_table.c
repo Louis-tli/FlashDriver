@@ -29,10 +29,20 @@
 #define RC_QUAD         READCFG(F_CMD_QUAD_READ, F_CMD_QUAD_READ_4B, 8U, 1U, 0xFFU, 0xFFU, 0x00U, 4U)
 
 /* Per-device timing variations */
-#define RC_DUAL_IO      READCFG(F_CMD_DUAL_IO_READ, F_CMD_DUAL_IO_READ_4B, 4U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* default */
-#define RC_DUAL_IO_GD   READCFG(F_CMD_DUAL_IO_READ, F_CMD_DUAL_IO_READ_4B, 6U, 1U, 0xFFU, 0xFFU, 0x00U, 2U) /* GD25LQ64E */
-#define RC_QUAD_IO_8    READCFG(F_CMD_QUAD_IO_READ, F_CMD_QUAD_IO_READ_4B, 8U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 8 */
-#define RC_QUAD_IO_6    READCFG(F_CMD_QUAD_IO_READ, F_CMD_QUAD_IO_READ_4B, 6U, 3U, 0xFFU, 0xFFU, 0x20U, 4U) /* dummy 6 */
+/* SW-013 DUMMY (owner-confirmed TCON wire order):
+ *   CMD -> ADDR -> DUMMY_LAST (FIRST dummy byte = M7-M0 mode byte slot)
+ *        -> DUMMY_VAL -> ... -> DATA
+ *   Winbond   : first dummy (M7-M0) MUST be Fxh   -> dummy_last 0xFF
+ *   GigaDevice: M7-M0 != Axh keeps normal mode    -> dummy_last 0x00
+ *   Macronix  : no mode byte (dummy don't care)   -> dummy_last 0x00
+ * Remaining dummy bytes are "don't care" on every vendor -> dummy_value 0x00. */
+#define RC_DUAL_IO_WB   READCFG(F_CMD_DUAL_IO_READ, F_CMD_DUAL_IO_READ_4B, 4U, 1U, 0x00U, 0xFFU, 0x00U, 2U) /* Winbond */
+#define RC_DUAL_IO_NM   READCFG(F_CMD_DUAL_IO_READ, F_CMD_DUAL_IO_READ_4B, 4U, 1U, 0x00U, 0x00U, 0x00U, 2U) /* Macronix */
+#define RC_DUAL_IO_GD   READCFG(F_CMD_DUAL_IO_READ, F_CMD_DUAL_IO_READ_4B, 6U, 1U, 0x00U, 0x00U, 0x00U, 2U) /* GD25LQ64E */
+#define RC_QUAD_IO_WB6  READCFG(F_CMD_QUAD_IO_READ, F_CMD_QUAD_IO_READ_4B, 6U, 3U, 0x00U, 0xFFU, 0x00U, 4U) /* Winbond, dummy 6 */
+#define RC_QUAD_IO_WB8  READCFG(F_CMD_QUAD_IO_READ, F_CMD_QUAD_IO_READ_4B, 8U, 3U, 0x00U, 0xFFU, 0x00U, 4U) /* Winbond, dummy 8 */
+#define RC_QUAD_IO_NM6  READCFG(F_CMD_QUAD_IO_READ, F_CMD_QUAD_IO_READ_4B, 6U, 3U, 0x00U, 0x00U, 0x00U, 4U) /* MX/GD, dummy 6 */
+#define RC_QUAD_IO_NM8  READCFG(F_CMD_QUAD_IO_READ, F_CMD_QUAD_IO_READ_4B, 8U, 3U, 0x00U, 0x00U, 0x00U, 4U) /* Macronix, dummy 8 */
 
 /******************************************************************************
  * ROM Table (indexed by FLASH_IDX)
@@ -60,9 +70,9 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_SINGLE]  = RC_SINGLE,
             [FLASH_READ_FAST]    = RC_FAST,
             [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
             [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB6
         }
     },
 
@@ -87,9 +97,9 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_SINGLE]  = RC_SINGLE,
             [FLASH_READ_FAST]    = RC_FAST,
             [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
             [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB8
         }
     },
 
@@ -114,9 +124,9 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_SINGLE]  = RC_SINGLE,
             [FLASH_READ_FAST]    = RC_FAST,
             [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
             [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB8
         }
     },
 
@@ -141,9 +151,9 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_SINGLE]  = RC_SINGLE,
             [FLASH_READ_FAST]    = RC_FAST,
             [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
             [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB8
         }
     },
 
@@ -168,9 +178,9 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_SINGLE]  = RC_SINGLE,
             [FLASH_READ_FAST]    = RC_FAST,
             [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_NM,
             [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
         }
     },
 
@@ -195,9 +205,9 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_SINGLE]  = RC_SINGLE,
             [FLASH_READ_FAST]    = RC_FAST,
             [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_NM,
             [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_8
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM8
         }
     },
 
@@ -224,7 +234,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_DUAL]    = RC_DUAL,
             [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
             [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_6
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
         }
     }
 };

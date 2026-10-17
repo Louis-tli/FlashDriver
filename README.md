@@ -120,7 +120,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (23 suites):
+### 테스트 통과 항목 (24 suites):
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -144,6 +144,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 21. **Easy API Round-Trip**: `Flash_ReadBytes/WriteBytes/EraseRange/EraseChip` 간편 API 검증
 22. **Time-based Delay (SW-014)**: µs→루프 환산(108/50MHz), 올림 처리, 무효 클록 가드
 23. **VSR WREN 50h WEL-Free (SW-013 WEL)**: 50h는 WEL을 올리지 않음(데이터시트 준수) — WEL=0 상태의 휘발성 WRSR 성공 + 명령 삽입 시 50h 무효화 규칙
+24. **Per-Model Dummy Config (SW-013 DUMMY)**: 7종 모델별 dummy_last/dummy_value 검증 — Winbond 0xFF(Fxh), MX/GD 0x00, mode_byte 0x00
 
 ---
 
@@ -165,3 +166,18 @@ Flash_DelayUs(100);             /* 최소 100µs 대기 */
 - 108MHz: 1µs = 36 loops / 50MHz: 1µs = 17 loops (올림)
 - 최대 지연: 포화 한계 ≈ 119초 (108MHz 기준, `uint32_t` 루프 수 한계)
 - `Flash_DelayLoops(count)`는 기존 루프 대기 API (하위 호환 유지)
+
+---
+
+## 🔧 모델별 더미 설정 (SW-013 DUMMY)
+
+TCON SFC의 전송 순서는 **CMD → ADDR → DUMMY_LAST(첫 더미 = M7-0 모드 바이트 자리) → DUMMY_VAL... → DATA**입니다 (오너 확인). 이에 따라 모델별로 첫 더미 값을 다르게 설정합니다:
+
+| 계열 | dummy_last (첫 더미) | 근거 |
+|------|-----|------|
+| Winbond (W25Q128JW/256JV/512JV, W25M512) | `0xFF` | 데이터시트 주석 "The first dummy is M7-M0 should be set to Fxh" |
+| GigaDevice (GD25LQ64E) | `0x00` | M7-0 ≠ Axh면 정상 동작 |
+| Macronix (MX25L512/51245G) | `0x00` | 모드 바이트 없음 (더미 don't care) |
+
+- 나머지 더미 바이트(dummy_value)는 전 계열 `0x00` (don't care)
+- `mode_byte`는 전 모델 `0x00` — M7-0은 DUMMY_LAST가 전송 (과거 0x20은 Winbond Read Command Bypass 진입 위험)

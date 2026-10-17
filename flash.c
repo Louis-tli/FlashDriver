@@ -722,11 +722,14 @@ static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chu
     (void)Flash_SPI_TransferByte(Flash_CmdRead(read_cfg, g_flash_handle.addr_mode));
     Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
 
-    if (read_cfg->mode_byte != 0x00U) {
-        (void)Flash_SPI_TransferByte(read_cfg->mode_byte);
-    }
-    for (uint32_t i = 0U; i < read_cfg->dummy_bytes; i++) {
-        (void)Flash_SPI_TransferByte(read_cfg->dummy_value);
+    /* SW-013 DUMMY (owner-confirmed TCON wire order):
+     * CMD -> ADDR -> DUMMY_LAST (FIRST dummy byte = M7-M0 mode byte slot)
+     *      -> DUMMY_VAL -> ... -> DATA */
+    if (read_cfg->dummy_bytes > 0U) {
+        (void)Flash_SPI_TransferByte(read_cfg->dummy_last);
+        for (uint32_t i = 1U; i < read_cfg->dummy_bytes; i++) {
+            (void)Flash_SPI_TransferByte(read_cfg->dummy_value);
+        }
     }
 
     Flash_SPI_ReadData(p_buf, chunk_len);

@@ -1001,6 +1001,40 @@ static void Test_VsrWrenNoWel(void)
     printf("  - Intervening command clears pending 50h. PASSED.\n\n");
 }
 
+static void Test_DummyCfgPerModel(void)
+{
+    static const struct { uint32_t jedec; uint8_t dummy_last; } models[] = {
+        { 0xEF6018U, 0xFFU },   /* W25Q128JW  - Winbond: first dummy Fxh */
+        { 0xEF4020U, 0xFFU },   /* W25Q512JV  - Winbond: first dummy Fxh */
+        { 0xEF4019U, 0xFFU },   /* W25Q256JV  - Winbond: first dummy Fxh */
+        { 0xEF6119U, 0xFFU },   /* W25M512    - Winbond: first dummy Fxh */
+        { 0xC22010U, 0x00U },   /* MX25L512   - no mode byte */
+        { 0xC2201AU, 0x00U },   /* MX25L51245G- no mode byte */
+        { 0xC86017U, 0x00U }    /* GD25LQ64E  - M7-0 != Axh */
+    };
+
+    printf("[TEST 24] Per-model dummy data / dummy last (SW-013 DUMMY)...\n");
+
+    for (uint32_t i = 0U; i < sizeof(models) / sizeof(models[0]); i++) {
+        const FLASH_INFO *info = Flash_FindDevice(models[i].jedec);
+        assert(info != NULL);
+
+        /* Wire order: CMD -> ADDR -> DUMMY_LAST (first dummy = M7-M0)
+         * -> DUMMY_VAL -> DATA. Trailing dummy bytes are don't care. */
+        assert(info->read_cfg[FLASH_READ_DUAL_IO].dummy_last  == models[i].dummy_last);
+        assert(info->read_cfg[FLASH_READ_DUAL_IO].dummy_value == 0x00U);
+        assert(info->read_cfg[FLASH_READ_QUAD_IO].dummy_last  == models[i].dummy_last);
+        assert(info->read_cfg[FLASH_READ_QUAD_IO].dummy_value == 0x00U);
+
+        /* mode_byte must stay 0x00: M7-M0 rides on DUMMY_LAST.
+         * (0x20 would enter Winbond Read Command Bypass / GD AXh rules) */
+        assert(info->read_cfg[FLASH_READ_DUAL_IO].mode_byte == 0x00U);
+        assert(info->read_cfg[FLASH_READ_QUAD_IO].mode_byte == 0x00U);
+    }
+    printf("  - 7 models: dummy_last 0xFF (Winbond Fxh) / 0x00 (MX, GD). PASSED.\n");
+    printf("  - mode_byte 0x00 everywhere (M7-M0 on DUMMY_LAST). PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1032,9 +1066,10 @@ int main(void)
     Test_EasyApi();
     Test_DelayUsConversion();
     Test_VsrWrenNoWel();
+    Test_DummyCfgPerModel();
 
     printf("================================================================\n");
-    printf(" ALL 23 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 24 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;
