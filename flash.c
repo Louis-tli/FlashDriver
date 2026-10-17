@@ -14,6 +14,7 @@
 #include "flash_sfc.h"
 #include "flash_cmd.h"
 #include "flash_crc.h"
+#include "flash_delay.h"
 
 /******************************************************************************
  * Global Runtime Handle Instance (Allocated in SRAM)
@@ -31,17 +32,8 @@ FLASH_HANDLE g_flash_handle =
 };
 
 /******************************************************************************
- * Helper: Send Short Delay (Cortex-M0 loop)
- ******************************************************************************/
-static void Flash_DelayLoops(uint32_t count)
-{
-    for (volatile uint32_t i = 0U; i < count; i++) {
-        /* No-op loop */
-    }
-}
-
-/******************************************************************************
  * Helper: Resolve Multi-Die Address & Die Index (W25M512)
+ * (Short delays now use Flash_DelayUs from flash_delay.c — SW-014)
  ******************************************************************************/
 static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
 {
@@ -192,7 +184,7 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     /* 2. Software Reset to clear any stale bus state (skippable for fast boot) */
     if ((options & FLASH_INIT_OPT_NO_RESET) == 0U) {
         (void)Flash_Reset();
-        Flash_DelayLoops(50000U);
+        Flash_DelayUs(2000U);   /* ~2ms reset settle (SW-014: was 50000 loops) */
     }
 
     /* 3. Read JEDEC ID and confirm the device responds */
@@ -295,7 +287,7 @@ int Flash_InitOpt(uint32_t options)
     /* 4. Issue Software Reset to clear any prior bus states (skippable) */
     if ((options & FLASH_INIT_OPT_NO_RESET) == 0U) {
         (void)Flash_Reset();
-        Flash_DelayLoops(50000U);
+        Flash_DelayUs(2000U);   /* ~2ms reset settle (SW-014: was 50000 loops) */
     }
 
     /* 5. Read JEDEC Identification (9Fh) */
@@ -354,11 +346,11 @@ int Flash_Reset(void)
 {
     /* Send Reset Enable (66h) */
     Flash_SPI_SendCmd(F_CMD_RESET_ENABLE);
-    Flash_DelayLoops(500U);
+    Flash_DelayUs(50U);         /* gap between 66h/99h (SW-014: was 500 loops) */
 
     /* Send Reset Device (99h) */
     Flash_SPI_SendCmd(F_CMD_RESET_DEVICE);
-    Flash_DelayLoops(20000U);
+    Flash_DelayUs(1000U);       /* reset recovery tRST (SW-014: was 20000 loops) */
 
     return FLASH_OK;
 }
@@ -433,7 +425,7 @@ int Flash_WriteEnable(void)
                 return FLASH_OK;
             }
         }
-        Flash_DelayLoops(100U);
+        Flash_DelayUs(10U);     /* WEL poll backoff (SW-014: was 100 loops) */
     }
 
     return FLASH_ERR_WRITE_FAIL;
@@ -453,7 +445,7 @@ int Flash_WriteEnableVolatile(void)
                 return FLASH_OK;
             }
         }
-        Flash_DelayLoops(100U);
+        Flash_DelayUs(10U);     /* WEL poll backoff (SW-014: was 100 loops) */
     }
 
     return FLASH_ERR_WRITE_FAIL;
@@ -480,7 +472,7 @@ int Flash_WaitBusy(uint32_t timeout_loops)
                 return FLASH_OK;
             }
         }
-        Flash_DelayLoops(50U);
+        Flash_DelayUs(5U);      /* BUSY poll backoff (SW-014: was 50 loops) */
     }
 
     return FLASH_ERR_TIMEOUT;
@@ -686,7 +678,7 @@ int Flash_SelectDie(uint8_t die_idx)
     (void)Flash_SPI_TransferByte(die_idx);
     Flash_SPI_CS_High();
 
-    Flash_DelayLoops(500U);
+    Flash_DelayUs(50U);         /* die-select settle (SW-014: was 500 loops) */
     g_flash_handle.current_die = die_idx;
 
     return FLASH_OK;

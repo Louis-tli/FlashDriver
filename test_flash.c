@@ -902,6 +902,42 @@ static void Test_EasyApi(void)
     printf("  - Easy API round-trip (any addr/len, auto mode) verified. PASSED.\n\n");
 }
 
+static void Test_DelayUsConversion(void)
+{
+    printf("[TEST 22] Time-based delay: us -> loop conversion (SW-014)...\n");
+
+    /* Defaults: FLASH_SYS_CLK_HZ = 108MHz, CYCLES_PER_LOOP = 3 -> 36 loops/us */
+    assert(Flash_SysClockGet() == FLASH_SYS_CLK_HZ);
+    assert(Flash_DelayUsToLoops(0U) == 0U);
+    assert(Flash_DelayUsToLoops(1U) == 36U);
+    assert(Flash_DelayUsToLoops(10U) == 360U);
+    assert(Flash_DelayUsToLoops(1000U) == 36000U);
+    printf("  - 108MHz default: 1us->36 loops, 1ms->36000 loops. PASSED.\n");
+
+    /* 50MHz target: ceil(50/3) = 17 loops/us (round-up = never under-delays) */
+    Flash_SysClockSet(50000000U);
+    assert(Flash_SysClockGet() == 50000000U);
+    assert(Flash_DelayUsToLoops(1U) == 17U);
+    assert(Flash_DelayUsToLoops(1000U) == 17000U);
+    printf("  - 50MHz: 1us->17 loops (ceil rounding). PASSED.\n");
+
+    /* Invalid clock (0) is ignored */
+    Flash_SysClockSet(0U);
+    assert(Flash_SysClockGet() == 50000000U);
+    printf("  - Clock guard: hz=0 ignored. PASSED.\n");
+
+    /* Smoke: delays execute and return */
+    Flash_DelayUs(1U);
+    Flash_DelayUs(1000U);
+    Flash_DelayLoops(10U);
+
+    /* Restore default for any later suites */
+    Flash_SysClockSet(FLASH_SYS_CLK_HZ);
+    assert(Flash_DelayUsToLoops(1U) == 36U);
+
+    printf("  - Time-based delay API verified. PASSED.\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -931,9 +967,10 @@ int main(void)
     Test_FlashIdxAccess();
     Test_CrcAlgoBootSelect();
     Test_EasyApi();
+    Test_DelayUsConversion();
 
     printf("================================================================\n");
-    printf(" ALL 21 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 22 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

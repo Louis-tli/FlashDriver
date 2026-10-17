@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "flash_delay.h"
 
 #ifdef __cplusplus
 extern "C" {

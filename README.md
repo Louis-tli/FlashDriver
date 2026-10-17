@@ -15,6 +15,9 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 
 void app_start(void)
 {
+    /* 0) MCU 클록 설정 (기본 108MHz — 50MHz 보드는 50000000U 지정) */
+    Flash_SysClockSet(108000000U);
+
     /* 1) 부팅 시 한 번: 칩 자동 감지 + 구성 + 잠금 */
     if (Flash_BootInit(0x00000000U) != FLASH_OK) {
         return;                          /* 칩 없음/불일치 → 안전 정지 */
@@ -37,6 +40,7 @@ void app_start(void)
 | `Flash_EraseRange(addr, len)` | 구간 내 모든 섹터 지우기 |
 | `Flash_EraseChip()` | 전체 칩 지우기 |
 | `Flash_SizeBytes()` / `Flash_SectorSize()` | 용량·섹터 크기 조회 |
+| `Flash_SysClockSet(hz)` / `Flash_DelayUs(us)` | MCU 클록 설정(108/50MHz) + 시간 기반 지연 |
 
 > 고급 제어(특정 읽기 모드, CRC, SFC 튜닝, 블록 보호)가 필요하면 `flash.h`의 전체 API를 사용하세요.
 
@@ -82,6 +86,8 @@ void app_start(void)
 ```text
 ├── flash_easy.h     # ⭐ 간편 API (최종 사용자용 — ReadBytes/WriteBytes/EraseRange 등)
 ├── flash_easy.c     # 간편 API 구현 (모드·단위·옵션 자동 선택)
+├── flash_delay.h    # 시간 기반 지연 (Flash_DelayUs — MCU 클록 108/50MHz 대응)
+├── flash_delay.c    # µs→루프 환산 + 바쁜 대기 구현 (SW-014)
 ├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
 ├── flash.c          # 드라이버 코어 엔진 (Init, Read, Program, Erase, Die Select 등)
 ├── flash_table.h    # Flash 모델 검색 인터페이스, FLASH_IDX 순서 enum 및 테이블 선언
@@ -105,7 +111,7 @@ GCC (MinGW / LLVM) 또는 ARM Compiler (ARMCC/ARMCLANG)를 통해 C99 표준으�
 
 ```bash
 # GCC 환경에서 C99 엄격 모드로 컴파일
-gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c flash_easy.c test_flash.c -o test_flash.exe
+gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c flash_delay.c flash_easy.c test_flash.c -o test_flash.exe
 
 # 검증 테스트 실행
 ./test_flash.exe
@@ -114,7 +120,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (20 suites):
+### 테스트 통과 항목 (22 suites):
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -135,3 +141,26 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 18. **WREN 50h vs 06h**: 지원 칩은 50h(VSR), 미지원은 06h 폴백
 19. **FLASH_IDX Access**: `g_flash_table[FLASH_IDX_x]` 인덱스 접근 패턴
 20. **CRC Algorithm from Boot Config**: 설정블록 `crc_algo`로 알고리즘 선택
+21. **Easy API Round-Trip**: `Flash_ReadBytes/WriteBytes/EraseRange/EraseChip` 간편 API 검증
+22. **Time-based Delay (SW-014)**: µs→루프 환산(108/50MHz), 올림 처리, 무효 클록 가드
+
+---
+
+## ⏱ 시간 기반 지연 (SW-014)
+
+플래시 데이터시트의 대기 시간은 **절대 시간(µs)** 으로 규정되지만, 기존 루프 대기는 MCU 클록에 따라 실제 시간이 변했습니다. SW-014부터 `Flash_DelayUs(µs)`로 마이크로초 단위 지연을 지정하면, 설정된 MCU 클록에 맞춰 루프 수를 자동 환산합니다.
+
+| 설정 | 값 |
+|------|-----|
+| 기본 클록 | `FLASH_SYS_CLK_HZ` = 108MHz (컴파일 시 `-D`로 변경 가능) |
+| 런타임 변경 | `Flash_SysClockSet(108000000U)` 또는 `Flash_SysClockSet(50000000U)` |
+| 환산 기준 | 루프 1회 ≈ `FLASH_DELAY_CYCLES_PER_LOOP`(기본 3) 사이클 — **올림 처리**로 실제 지연이 요청보다 짧아지지 않음 |
+
+```c
+Flash_SysClockSet(50000000U);   /* 50MHz 보드인 경우 */
+Flash_DelayUs(100);             /* 최소 100µs 대기 */
+```
+
+- 108MHz: 1µs = 36 loops / 50MHz: 1µs = 17 loops (올림)
+- 최대 지연: 포화 한계 ≈ 119초 (108MHz 기준, `uint32_t` 루프 수 한계)
+- `Flash_DelayLoops(count)`는 기존 루프 대기 API (하위 호환 유지)
