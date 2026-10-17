@@ -48,9 +48,9 @@ uint8_t Flash_CmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode
 
     if (Flash_CmdUse4bOpcode(addr_mode))
     {
-        return is_quad ? CMD_QUAD_PAGE_PROGRAM_4B : CMD_PAGE_PROGRAM_4B;
+        return is_quad ? F_CMD_QUAD_PAGE_PROGRAM_4B : F_CMD_PAGE_PROGRAM_4B;
     }
-    return is_quad ? CMD_QUAD_PAGE_PROGRAM : CMD_PAGE_PROGRAM;
+    return is_quad ? F_CMD_QUAD_PAGE_PROGRAM : F_CMD_PAGE_PROGRAM;
 }
 
 /******************************************************************************
@@ -63,13 +63,13 @@ uint8_t Flash_CmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode)
     switch (erase_mode)
     {
         case FLASH_ERASE_SECTOR:
-            return use_4b ? CMD_SECTOR_ERASE_4B : CMD_SECTOR_ERASE;
+            return use_4b ? F_CMD_SECTOR_ERASE_4B : F_CMD_SECTOR_ERASE;
         case FLASH_ERASE_BLOCK_32K:
-            return use_4b ? CMD_BLOCK_ERASE_32K_4B : CMD_BLOCK_ERASE_32K;
+            return use_4b ? F_CMD_BLOCK_ERASE_32K_4B : F_CMD_BLOCK_ERASE_32K;
         case FLASH_ERASE_BLOCK_64K:
-            return use_4b ? CMD_BLOCK_ERASE_64K_4B : CMD_BLOCK_ERASE_64K;
+            return use_4b ? F_CMD_BLOCK_ERASE_64K_4B : F_CMD_BLOCK_ERASE_64K;
         case FLASH_ERASE_CHIP:
-            return CMD_CHIP_ERASE;
+            return F_CMD_CHIP_ERASE;
         default:
             return 0x00U;
     }

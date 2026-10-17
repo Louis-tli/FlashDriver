@@ -13,6 +13,7 @@
 #include "flash_spi.h"
 #include "flash_sfc.h"
 #include "flash_cmd.h"
+#include "flash_crc.h"
 
 /******************************************************************************
  * Global Runtime Handle Instance (Allocated in SRAM)
@@ -105,7 +106,7 @@ static int Flash_ApplyDieConfig(void)
     /* Enter-4-Byte mode (B7h) is only needed for Method B (FLASH_ADDR_4BYTE_ENTER). */
     if (Flash_CmdNeedsEnter4b(g_flash_handle.addr_mode))
     {
-        Flash_SPI_SendCmd(CMD_ENTER_4BYTE_ADDR);
+        Flash_SPI_SendCmd(F_CMD_ENTER_4BYTE_ADDR);
         (void)Flash_WaitBusy(10000U);
     }
 
@@ -182,7 +183,7 @@ int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
 
     /* 03h + 3-byte address works on every supported device in low memory. */
     Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(CMD_READ);
+    (void)Flash_SPI_TransferByte(F_CMD_READ);
     Flash_SPI_SendAddr(addr, 3U);
     Flash_SPI_ReadData((uint8_t *)buf, len);
     Flash_SPI_CS_High();
@@ -247,8 +248,7 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     }
 
     /* 6. Look up the selected product. The config's model field selects an exact
-     *    variant (e.g. GD25LQ64E_PLUTO_SFC when it shares a JEDEC ID); otherwise
-     *    fall back to matching by the expected JEDEC ID. */
+     *    variant when needed; otherwise fall back to the expected JEDEC ID. */
     const FLASH_INFO *p_info = NULL;
     if (cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN)
     {
@@ -275,6 +275,8 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     /* 8. Configure from the settings block + product descriptor */
     g_flash_handle.info         = p_info;
     g_flash_handle.addr_mode    = Flash_ResolveAddrMode(cfg.addr_mode, p_info);
+    g_flash_handle.crc_algo     = (cfg.crc_algo < (uint8_t)FLASH_CRC_ALGO_MAX)
+                                  ? (FLASH_CRC_ALGO)cfg.crc_algo : FLASH_CRC32;
     g_flash_handle.current_die  = 0U;
     g_flash_handle.qe_enabled   = false;
     g_flash_handle.last_crc     = 0U;
@@ -385,11 +387,11 @@ int Flash_Init(void)
 int Flash_Reset(void)
 {
     /* Send Reset Enable (66h) */
-    Flash_SPI_SendCmd(CMD_RESET_ENABLE);
+    Flash_SPI_SendCmd(F_CMD_RESET_ENABLE);
     Flash_DelayLoops(500U);
 
     /* Send Reset Device (99h) */
-    Flash_SPI_SendCmd(CMD_RESET_DEVICE);
+    Flash_SPI_SendCmd(F_CMD_RESET_DEVICE);
     Flash_DelayLoops(20000U);
 
     return FLASH_OK;
@@ -408,7 +410,7 @@ int Flash_ReadJEDECID(uint32_t *p_jedec_id)
     }
 
     Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(CMD_RDID);
+    (void)Flash_SPI_TransferByte(F_CMD_RDID);
     Flash_SPI_ReadData(id_buf, 3U);
     Flash_SPI_CS_High();
 
@@ -434,13 +436,13 @@ int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val)
     switch (reg_idx)
     {
         case 1U:
-            cmd = CMD_RDSR1;
+            cmd = F_CMD_RDSR1;
             break;
         case 2U:
-            cmd = CMD_RDSR2;
+            cmd = F_CMD_RDSR2;
             break;
         case 3U:
-            cmd = CMD_RDSR3;
+            cmd = F_CMD_RDSR3;
             break;
         default:
             return FLASH_ERR_PARAM;
@@ -461,7 +463,30 @@ int Flash_WriteEnable(void)
 {
     for (uint32_t retry = 0U; retry < 5U; retry++)
     {
-        Flash_SPI_SendCmd(CMD_WREN);
+        Flash_SPI_SendCmd(F_CMD_WREN);
+
+        uint8_t sr1 = 0U;
+        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK)
+        {
+            if ((sr1 & FLASH_SR1_WEL) != 0U)
+            {
+                return FLASH_OK;
+            }
+        }
+        Flash_DelayLoops(100U);
+    }
+
+    return FLASH_ERR_WRITE_FAIL;
+}
+
+/******************************************************************************
+ * Public API: Flash_WriteEnableVolatile (50h)
+ ******************************************************************************/
+int Flash_WriteEnableVolatile(void)
+{
+    for (uint32_t retry = 0U; retry < 5U; retry++)
+    {
+        Flash_SPI_SendCmd(F_CMD_VSR_WREN);
 
         uint8_t sr1 = 0U;
         if (Flash_ReadStatus(1U, &sr1) == FLASH_OK)
@@ -482,7 +507,7 @@ int Flash_WriteEnable(void)
  ******************************************************************************/
 int Flash_WriteDisable(void)
 {
-    Flash_SPI_SendCmd(CMD_WRDI);
+    Flash_SPI_SendCmd(F_CMD_WRDI);
     return FLASH_OK;
 }
 
@@ -508,6 +533,19 @@ int Flash_WaitBusy(uint32_t timeout_loops)
 }
 
 /******************************************************************************
+ * Helper: status-register write-enable (50h when supported, else 06h)
+ ******************************************************************************/
+static int Flash_SrWriteEnable(void)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+    if ((info != NULL) && ((info->features & FLASH_FEAT_VSR_WREN) != 0U))
+    {
+        return Flash_WriteEnableVolatile();
+    }
+    return Flash_WriteEnable();
+}
+
+/******************************************************************************
  * Public API: Flash_WriteStatus
  ******************************************************************************/
 int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
@@ -528,14 +566,14 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
             return status;
         }
 
-        status = Flash_WriteEnable();
+        status = Flash_SrWriteEnable();
         if (status != FLASH_OK)
         {
             return status;
         }
 
         Flash_SPI_CS_Low();
-        (void)Flash_SPI_TransferByte(CMD_WRSR1);
+        (void)Flash_SPI_TransferByte(F_CMD_WRSR1);
         (void)Flash_SPI_TransferByte(sr1);
         (void)Flash_SPI_TransferByte(val); /* SR2 */
         Flash_SPI_CS_High();
@@ -544,7 +582,7 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
     }
 
     /* Standard Status Register Write */
-    int status = Flash_WriteEnable();
+    int status = Flash_SrWriteEnable();
     if (status != FLASH_OK)
     {
         return status;
@@ -553,17 +591,17 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
     Flash_SPI_CS_Low();
     if (reg_idx == 1U)
     {
-        (void)Flash_SPI_TransferByte(CMD_WRSR1);
+        (void)Flash_SPI_TransferByte(F_CMD_WRSR1);
         (void)Flash_SPI_TransferByte(val);
     }
     else if (reg_idx == 2U)
     {
-        (void)Flash_SPI_TransferByte(CMD_WRSR2);
+        (void)Flash_SPI_TransferByte(F_CMD_WRSR2);
         (void)Flash_SPI_TransferByte(val);
     }
     else if (reg_idx == 3U)
     {
-        (void)Flash_SPI_TransferByte(CMD_WRSR3);
+        (void)Flash_SPI_TransferByte(F_CMD_WRSR3);
         (void)Flash_SPI_TransferByte(val);
     }
     else
@@ -716,7 +754,7 @@ int Flash_SelectDie(uint8_t die_idx)
 
     /* Winbond Software Die Select (C2h + die_id) */
     Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(CMD_WINBOND_DIE_SELECT);
+    (void)Flash_SPI_TransferByte(F_CMD_WINBOND_DIE_SELECT);
     (void)Flash_SPI_TransferByte(die_idx);
     Flash_SPI_CS_High();
 
@@ -1041,7 +1079,7 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
                     return status;
                 }
 
-                Flash_SPI_SendCmd(CMD_CHIP_ERASE);
+                Flash_SPI_SendCmd(F_CMD_CHIP_ERASE);
 
                 /* Chip erase can take multiple seconds */
                 status = Flash_WaitBusy(50000000U);
@@ -1066,7 +1104,7 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
                 return status;
             }
 
-            Flash_SPI_SendCmd(CMD_CHIP_ERASE);
+            Flash_SPI_SendCmd(F_CMD_CHIP_ERASE);
             return Flash_WaitBusy(50000000U);
         }
     }

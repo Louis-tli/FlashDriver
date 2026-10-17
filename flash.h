@@ -115,7 +115,8 @@ typedef enum
 #define FLASH_READ_OPT_NONE             (0x00000000U)
 #define FLASH_READ_OPT_SFC              (0x00000001U)   /* Use SFC Memory-Mapped DMA */
 #define FLASH_READ_OPT_DMA              (0x00000002U)   /* Enable DMA controller */
-#define FLASH_READ_OPT_CRC              (0x00000004U)   /* Calculate & verify CRC */
+#define FLASH_READ_OPT_CRC              (0x00000004U)   /* Start a new CRC over the read data */
+#define FLASH_READ_OPT_CRC_CONT         (0x00000008U)   /* Continue CRC from the previous value */
 
 /******************************************************************************
  * Init Options (Bitmask) - SW-013 / G7
@@ -126,50 +127,51 @@ typedef enum
 /******************************************************************************
  * Common Standard SPI NOR Flash Command Opcodes
  ******************************************************************************/
-#define CMD_WREN                        (0x06U) /* Write Enable */
-#define CMD_WRDI                        (0x04U) /* Write Disable */
-#define CMD_RDSR1                       (0x05U) /* Read Status Register 1 */
-#define CMD_RDSR2                       (0x35U) /* Read Status Register 2 */
-#define CMD_RDSR3                       (0x15U) /* Read Status Register 3 */
-#define CMD_WRSR1                       (0x01U) /* Write Status Register 1 (or SR1+SR2) */
-#define CMD_WRSR2                       (0x31U) /* Write Status Register 2 */
-#define CMD_WRSR3                       (0x11U) /* Write Status Register 3 */
-#define CMD_RDID                        (0x9FU) /* Read JEDEC Identification */
-#define CMD_READ                        (0x03U) /* Read Data */
-#define CMD_FAST_READ                   (0x0BU) /* Fast Read */
-#define CMD_DUAL_READ                   (0x3BU) /* Dual Output Read */
-#define CMD_DUAL_IO_READ                (0xBBU) /* Dual I/O Read */
-#define CMD_QUAD_READ                   (0x6BU) /* Quad Output Read */
-#define CMD_QUAD_IO_READ                (0xEBU) /* Quad I/O Read */
-#define CMD_PAGE_PROGRAM                (0x02U) /* Page Program */
-#define CMD_QUAD_PAGE_PROGRAM           (0x32U) /* Quad Page Program */
-#define CMD_SECTOR_ERASE                (0x20U) /* 4KB Sector Erase */
-#define CMD_BLOCK_ERASE_32K             (0x52U) /* 32KB Block Erase */
-#define CMD_BLOCK_ERASE_64K             (0xD8U) /* 64KB Block Erase */
-#define CMD_CHIP_ERASE                  (0xC7U) /* Chip Erase */
-#define CMD_CHIP_ERASE_ALT              (0x60U) /* Alternative Chip Erase */
-#define CMD_RESET_ENABLE                (0x66U) /* Software Reset Enable */
-#define CMD_RESET_DEVICE                (0x99U) /* Software Reset Device */
-#define CMD_ENTER_4BYTE_ADDR            (0xB7U) /* Enter 4-Byte Address Mode */
-#define CMD_EXIT_4BYTE_ADDR             (0xE9U) /* Exit 4-Byte Address Mode */
-#define CMD_WINBOND_DIE_SELECT          (0xC2U) /* Winbond SpiStack Software Die Select */
+#define F_CMD_WREN                        (0x06U) /* Write Enable */
+#define F_CMD_VSR_WREN                    (0x50U) /* Volatile Status Register Write Enable */
+#define F_CMD_WRDI                        (0x04U) /* Write Disable */
+#define F_CMD_RDSR1                       (0x05U) /* Read Status Register 1 */
+#define F_CMD_RDSR2                       (0x35U) /* Read Status Register 2 */
+#define F_CMD_RDSR3                       (0x15U) /* Read Status Register 3 */
+#define F_CMD_WRSR1                       (0x01U) /* Write Status Register 1 (or SR1+SR2) */
+#define F_CMD_WRSR2                       (0x31U) /* Write Status Register 2 */
+#define F_CMD_WRSR3                       (0x11U) /* Write Status Register 3 */
+#define F_CMD_RDID                        (0x9FU) /* Read JEDEC Identification */
+#define F_CMD_READ                        (0x03U) /* Read Data */
+#define F_CMD_FAST_READ                   (0x0BU) /* Fast Read */
+#define F_CMD_DUAL_READ                   (0x3BU) /* Dual Output Read */
+#define F_CMD_DUAL_IO_READ                (0xBBU) /* Dual I/O Read */
+#define F_CMD_QUAD_READ                   (0x6BU) /* Quad Output Read */
+#define F_CMD_QUAD_IO_READ                (0xEBU) /* Quad I/O Read */
+#define F_CMD_PAGE_PROGRAM                (0x02U) /* Page Program */
+#define F_CMD_QUAD_PAGE_PROGRAM           (0x32U) /* Quad Page Program */
+#define F_CMD_SECTOR_ERASE                (0x20U) /* 4KB Sector Erase */
+#define F_CMD_BLOCK_ERASE_32K             (0x52U) /* 32KB Block Erase */
+#define F_CMD_BLOCK_ERASE_64K             (0xD8U) /* 64KB Block Erase */
+#define F_CMD_CHIP_ERASE                  (0xC7U) /* Chip Erase */
+#define F_CMD_CHIP_ERASE_ALT              (0x60U) /* Alternative Chip Erase */
+#define F_CMD_RESET_ENABLE                (0x66U) /* Software Reset Enable */
+#define F_CMD_RESET_DEVICE                (0x99U) /* Software Reset Device */
+#define F_CMD_ENTER_4BYTE_ADDR            (0xB7U) /* Enter 4-Byte Address Mode */
+#define F_CMD_EXIT_4BYTE_ADDR             (0xE9U) /* Exit 4-Byte Address Mode */
+#define F_CMD_WINBOND_DIE_SELECT          (0xC2U) /* Winbond SpiStack Software Die Select */
 
 /******************************************************************************
  * 4-Byte Address Command Variants (SW-013 / req 2)
  *   Some devices use dedicated opcodes when addressing above 16MB (4-Byte
  *   mode) instead of reusing the 3-Byte opcode after Enter-4-Byte-Mode (B7h).
  ******************************************************************************/
-#define CMD_READ_4B                     (0x13U) /* Read Data (4-Byte) */
-#define CMD_FAST_READ_4B                (0x0CU) /* Fast Read (4-Byte) */
-#define CMD_DUAL_READ_4B                (0x3CU) /* Dual Output Read (4-Byte) */
-#define CMD_DUAL_IO_READ_4B             (0xBCU) /* Dual I/O Read (4-Byte) */
-#define CMD_QUAD_READ_4B                (0x6CU) /* Quad Output Read (4-Byte) */
-#define CMD_QUAD_IO_READ_4B             (0xECU) /* Quad I/O Read (4-Byte) */
-#define CMD_PAGE_PROGRAM_4B             (0x12U) /* Page Program (4-Byte) */
-#define CMD_QUAD_PAGE_PROGRAM_4B        (0x34U) /* Quad Page Program (4-Byte) */
-#define CMD_SECTOR_ERASE_4B             (0x21U) /* 4KB Sector Erase (4-Byte) */
-#define CMD_BLOCK_ERASE_32K_4B          (0x5CU) /* 32KB Block Erase (4-Byte) */
-#define CMD_BLOCK_ERASE_64K_4B          (0xDCU) /* 64KB Block Erase (4-Byte) */
+#define F_CMD_READ_4B                     (0x13U) /* Read Data (4-Byte) */
+#define F_CMD_FAST_READ_4B                (0x0CU) /* Fast Read (4-Byte) */
+#define F_CMD_DUAL_READ_4B                (0x3CU) /* Dual Output Read (4-Byte) */
+#define F_CMD_DUAL_IO_READ_4B             (0xBCU) /* Dual I/O Read (4-Byte) */
+#define F_CMD_QUAD_READ_4B                (0x6CU) /* Quad Output Read (4-Byte) */
+#define F_CMD_QUAD_IO_READ_4B             (0xECU) /* Quad I/O Read (4-Byte) */
+#define F_CMD_PAGE_PROGRAM_4B             (0x12U) /* Page Program (4-Byte) */
+#define F_CMD_QUAD_PAGE_PROGRAM_4B        (0x34U) /* Quad Page Program (4-Byte) */
+#define F_CMD_SECTOR_ERASE_4B             (0x21U) /* 4KB Sector Erase (4-Byte) */
+#define F_CMD_BLOCK_ERASE_32K_4B          (0x5CU) /* 32KB Block Erase (4-Byte) */
+#define F_CMD_BLOCK_ERASE_64K_4B          (0xDCU) /* 64KB Block Erase (4-Byte) */
 
 /******************************************************************************
  * Status Register 1 Bit Masks
@@ -197,6 +199,7 @@ typedef enum
 #define FLASH_FEAT_4BYTE_ADDR           (1U << 2)
 #define FLASH_FEAT_MULTI_DIE            (1U << 3)
 #define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* Writes SR1 and SR2 together (GD25LQ64E) */
+#define FLASH_FEAT_VSR_WREN             (1U << 5)   /* Supports 50h Volatile SR Write Enable */
 
 /******************************************************************************
  * JEDEC ID / Family Matching
@@ -205,6 +208,19 @@ typedef enum
  ******************************************************************************/
 #define FLASH_JEDEC_ID_MASK             (0x00FFFFFFU)
 #define FLASH_JEDEC_FAMILY_MASK         (0x00FFFF00U)
+
+/******************************************************************************
+ * CRC Algorithms (SW-013: selectable at init)
+ ******************************************************************************/
+typedef enum
+{
+    FLASH_CRC8 = 0,
+    FLASH_CRC16,
+    FLASH_CRC16_CCITT,
+    FLASH_CRC32,
+    FLASH_CRC_CHECKSUM,
+    FLASH_CRC_ALGO_MAX
+} FLASH_CRC_ALGO;
 
 /******************************************************************************
  * Boot Settings Block (stored in Flash, loaded via basic read at boot)
@@ -219,7 +235,7 @@ typedef struct
     uint32_t features;          /* FLASH_FEAT_* operational flags */
     uint16_t sfc_page_size;     /* SFC transfer page size: 2048 or 4096 */
     uint8_t  addr_mode;         /* FLASH_ADDR_MODE (0 = default from table) */
-    uint8_t  reserved8;
+    uint8_t  crc_algo;          /* FLASH_CRC_ALGO (CRC/checksum selection) */
     uint32_t crc;               /* Checksum of the fields above */
 } FLASH_BOOT_CONFIG;
 
@@ -284,6 +300,7 @@ typedef struct
     const FLASH_INFO   *info;               /* Pointer to active flash model in ROM */
     FLASH_STATE         state;              /* Current driver state */
     FLASH_ADDR_MODE     addr_mode;          /* Active addressing mode (resolved) */
+    FLASH_CRC_ALGO      crc_algo;           /* Active CRC algorithm */
     uint8_t             current_die;        /* Currently selected die index */
     bool                qe_enabled;         /* True if QE is verified enabled */
     uint16_t            sfc_page_size;      /* SFC DMA page size: 2048 or 4096 */
@@ -397,6 +414,12 @@ int Flash_Protect(uint8_t bp_mask);
  * @brief  Send Write Enable (06h) and verify WEL bit is set.
  */
 int Flash_WriteEnable(void);
+
+/**
+ * @brief  Send Volatile Status-Register Write Enable (50h) and verify WEL.
+ *         Used for volatile SR writes (e.g. QE) when the device supports it.
+ */
+int Flash_WriteEnableVolatile(void);
 
 /**
  * @brief  Send Write Disable (04h).

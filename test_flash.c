@@ -34,7 +34,7 @@ typedef struct
     uint8_t  current_cmd;
     uint8_t  cmd_byte_index;
 
-    /* Boot settings block served on CMD_READ (03h) */
+    /* Boot settings block served on F_CMD_READ (03h) */
     uint8_t  config_buf[128];
     uint32_t config_len;
 
@@ -124,19 +124,19 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
         s_mock.current_cmd = tx_byte;
         s_mock.cmd_byte_index = 1U;
 
-        if (tx_byte == CMD_WREN)
+        if (tx_byte == F_CMD_WREN)
         {
             s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
         }
-        else if (tx_byte == CMD_WRDI)
+        else if (tx_byte == F_CMD_WRDI)
         {
             s_mock.sr1[s_mock.current_die] &= (uint8_t)(~FLASH_SR1_WEL);
         }
-        else if (tx_byte == CMD_ENTER_4BYTE_ADDR)
+        else if (tx_byte == F_CMD_ENTER_4BYTE_ADDR)
         {
             s_mock.entered_4byte[s_mock.current_die] = true;
         }
-        else if ((tx_byte == CMD_RESET_ENABLE) || (tx_byte == CMD_RESET_DEVICE))
+        else if ((tx_byte == F_CMD_RESET_ENABLE) || (tx_byte == F_CMD_RESET_DEVICE))
         {
             s_mock.reset_cmd_count++;
         }
@@ -145,7 +145,7 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 
     switch (s_mock.current_cmd)
     {
-        case CMD_RDID: /* 9Fh */
+        case F_CMD_RDID: /* 9Fh */
             if (s_mock.cmd_byte_index == 1U)
             {
                 rx_byte = (uint8_t)((s_mock.mock_jedec_id >> 16) & 0xFFU);
@@ -161,7 +161,7 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             s_mock.cmd_byte_index++;
             break;
 
-        case CMD_READ: /* 03h : serve the boot settings block after cmd + 3 addr */
+        case F_CMD_READ: /* 03h : serve the boot settings block after cmd + 3 addr */
             if (s_mock.cmd_byte_index >= 4U)
             {
                 const uint32_t idx = s_mock.cmd_byte_index - 4U;
@@ -174,17 +174,17 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             s_mock.cmd_byte_index++;
             break;
 
-        case CMD_RDSR1: /* 05h */
+        case F_CMD_RDSR1: /* 05h */
             rx_byte = s_mock.sr1[s_mock.current_die];
             break;
-        case CMD_RDSR2: /* 35h */
+        case F_CMD_RDSR2: /* 35h */
             rx_byte = s_mock.sr2[s_mock.current_die];
             break;
-        case CMD_RDSR3: /* 15h */
+        case F_CMD_RDSR3: /* 15h */
             rx_byte = s_mock.sr3[s_mock.current_die];
             break;
 
-        case CMD_WRSR1: /* 01h : 1-byte (SR1) or 2-byte (SR1+SR2) */
+        case F_CMD_WRSR1: /* 01h : 1-byte (SR1) or 2-byte (SR1+SR2) */
             if (s_mock.cmd_byte_index == 1U)
             {
                 s_mock.sr1[s_mock.current_die] = tx_byte;
@@ -197,28 +197,28 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             }
             break;
 
-        case CMD_WRSR2: /* 31h */
+        case F_CMD_WRSR2: /* 31h */
             s_mock.sr2[s_mock.current_die] = tx_byte;
             break;
 
-        case CMD_WREN: /* 06h */
+        case F_CMD_WREN: /* 06h */
             s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
             break;
 
-        case CMD_WRDI: /* 04h */
+        case F_CMD_WRDI: /* 04h */
             s_mock.sr1[s_mock.current_die] &= (uint8_t)(~FLASH_SR1_WEL);
             break;
 
-        case CMD_WINBOND_DIE_SELECT: /* C2h : next byte selects the die */
+        case F_CMD_WINBOND_DIE_SELECT: /* C2h : next byte selects the die */
             s_mock.current_die = tx_byte;
             s_mock.last_die_selected = tx_byte;
             s_mock.die_select_count++;
             break;
 
-        case CMD_PAGE_PROGRAM:       /* 02h */
-        case CMD_QUAD_PAGE_PROGRAM:  /* 32h */
-        case CMD_PAGE_PROGRAM_4B:    /* 12h */
-        case CMD_QUAD_PAGE_PROGRAM_4B: /* 34h */
+        case F_CMD_PAGE_PROGRAM:       /* 02h */
+        case F_CMD_QUAD_PAGE_PROGRAM:  /* 32h */
+        case F_CMD_PAGE_PROGRAM_4B:    /* 12h */
+        case F_CMD_QUAD_PAGE_PROGRAM_4B: /* 34h */
             if (s_mock.cmd_byte_index == 1U)
             {
                 s_mock.page_program_count++;
@@ -404,7 +404,7 @@ static void Test_SFCDMAReadSequence(void)
                         FLASH_READ_UNIT_DEFAULT,
                         FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA | FLASH_READ_OPT_CRC);
     assert(status == FLASH_OK);
-    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ_4B);  /* W25Q256JV is 4-Byte -> 0xEC */
+    assert(g_p_sfc_regs->CMD == F_CMD_QUAD_IO_READ_4B);  /* W25Q256JV is 4-Byte -> 0xEC */
     assert(g_p_sfc_regs->ADDR_SIZE == 4U);
     assert(g_p_sfc_regs->MODE == 4U);
     assert(g_p_sfc_regs->ACCESS_UNIT == 4U);
@@ -655,7 +655,7 @@ static void Test_AddrModeOpcodes(void)
     status = Flash_Read(0x00001000U, buf, 4U, FLASH_READ_QUAD_IO,
                         FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
     assert(status == FLASH_OK);
-    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ_4B);   /* 0xEC */
+    assert(g_p_sfc_regs->CMD == F_CMD_QUAD_IO_READ_4B);   /* 0xEC */
     assert(g_p_sfc_regs->ADDR_SIZE == 4U);
     printf("  - 4-Byte device used Quad I/O 4B opcode 0x%02X.\n", g_p_sfc_regs->CMD);
 
@@ -668,7 +668,7 @@ static void Test_AddrModeOpcodes(void)
     status = Flash_Read(0x00001000U, buf, 4U, FLASH_READ_QUAD_IO,
                         FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
     assert(status == FLASH_OK);
-    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ);       /* 0xEB */
+    assert(g_p_sfc_regs->CMD == F_CMD_QUAD_IO_READ);       /* 0xEB */
     assert(g_p_sfc_regs->ADDR_SIZE == 3U);
     printf("  - 3-Byte device used Quad I/O 3B opcode 0x%02X.\n", g_p_sfc_regs->CMD);
 
@@ -692,7 +692,7 @@ static void Test_AddrModeOpcodes(void)
     status = Flash_Read(0x00001000U, buf, 4U, FLASH_READ_QUAD_IO,
                         FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
     assert(status == FLASH_OK);
-    assert(g_p_sfc_regs->CMD == CMD_QUAD_IO_READ);       /* 0xEB (3B opcode) */
+    assert(g_p_sfc_regs->CMD == F_CMD_QUAD_IO_READ);       /* 0xEB (3B opcode) */
     assert(g_p_sfc_regs->ADDR_SIZE == 4U);
     assert(s_mock.entered_4byte[0] == true);             /* B7h sent */
     printf("  - Method B (Enter-4B) used 3B opcode 0x%02X + sent B7h. PASSED.\n\n", g_p_sfc_regs->CMD);
@@ -728,10 +728,10 @@ static void Test_TableReadCfgGuard(void)
     const FLASH_INFO *w25q256 = Flash_FindDevice(0xEF4019U);
     assert(w25q256 != NULL);
     assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].dummy_cycles == 8U);
-    assert(w25q256->read_cfg[FLASH_READ_SINGLE].command == CMD_READ);
-    assert(w25q256->read_cfg[FLASH_READ_SINGLE].command_4b == CMD_READ_4B);
-    assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].command == CMD_QUAD_IO_READ);
-    assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].command_4b == CMD_QUAD_IO_READ_4B);
+    assert(w25q256->read_cfg[FLASH_READ_SINGLE].command == F_CMD_READ);
+    assert(w25q256->read_cfg[FLASH_READ_SINGLE].command_4b == F_CMD_READ_4B);
+    assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].command == F_CMD_QUAD_IO_READ);
+    assert(w25q256->read_cfg[FLASH_READ_QUAD_IO].command_4b == F_CMD_QUAD_IO_READ_4B);
 
     const FLASH_INFO *gd = Flash_FindDevice(0xC86017U);
     assert(gd != NULL);

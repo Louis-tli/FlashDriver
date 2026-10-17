@@ -46,7 +46,7 @@ void Flash_SFC_SetSingleMode(void)
     if (g_p_sfc_regs != NULL)
     {
         g_p_sfc_regs->MODE         = 0U;            /* Single Mode */
-        g_p_sfc_regs->CMD          = CMD_READ;      /* 03h */
+        g_p_sfc_regs->CMD          = F_CMD_READ;      /* 03h */
         g_p_sfc_regs->DUMMY_CYCLE  = 0U;
         g_p_sfc_regs->DUMMY_BYTE   = 0U;
         g_p_sfc_regs->DUMMY_VAL    = 0x00U;
