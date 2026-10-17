@@ -16,6 +16,7 @@
 #include "flash_table.h"
 #include "flash_spi.h"
 #include "flash_sfc.h"
+#include "flash_easy.h"
 
 /******************************************************************************
  * Mock SPI State for Emulation & Testing (per-die status registers)
@@ -869,6 +870,38 @@ static void Test_CrcAlgoBootSelect(void)
     printf("  - Boot-config CRC algorithm selection verified. PASSED.\n\n");
 }
 
+static void Test_EasyApi(void)
+{
+    uint8_t buf[256];
+
+    printf("[TEST 21] Easy API: ReadBytes / WriteBytes / EraseRange / EraseChip...\n");
+
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;                 /* W25Q256JV (quad) */
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+
+    /* Convenience accessors */
+    assert(Flash_SizeBytes() == 32U * 1024U * 1024U);
+    assert(Flash_SectorSize() == 4096U);
+
+    /* Byte-granular read at any address (auto mode, any alignment) */
+    assert(Flash_ReadBytes(0x00001000U, buf, sizeof(buf)) == FLASH_OK);
+
+    /* Erase a region then program it */
+    assert(Flash_EraseRange(0x00002000U, 4096U) == FLASH_OK);   /* 1 sector */
+    assert(Flash_WriteBytes(0x00002000U, buf, sizeof(buf)) == FLASH_OK);
+
+    /* Unaligned address / odd length are fine (auto rounding + byte unit) */
+    assert(Flash_EraseRange(0x00003123U, 100U) == FLASH_OK);
+    assert(Flash_ReadBytes(0x00003123U, buf, 100U) == FLASH_OK);
+    assert(Flash_WriteBytes(0x00003123U, buf, 100U) == FLASH_OK);
+
+    /* Whole-chip erase */
+    assert(Flash_EraseChip() == FLASH_OK);
+    printf("  - Easy API round-trip (any addr/len, auto mode) verified. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -897,9 +930,10 @@ int main(void)
     Test_VsrWriteEnable();
     Test_FlashIdxAccess();
     Test_CrcAlgoBootSelect();
+    Test_EasyApi();
 
     printf("================================================================\n");
-    printf(" ALL 20 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 21 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

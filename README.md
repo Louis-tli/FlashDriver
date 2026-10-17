@@ -5,6 +5,43 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 
 ---
 
+## 🚀 빠른 시작 — 최대한 단순한 사용법
+
+**최종 사용자는 `flash_easy.h`만 포함하고 아래 함수만 쓰면 됩니다.**
+읽기 모드·단위·옵션·정렬은 모두 자동 처리됩니다.
+
+```c
+#include "flash_easy.h"
+
+void app_start(void)
+{
+    /* 1) 부팅 시 한 번: 칩 자동 감지 + 구성 + 잠금 */
+    if (Flash_BootInit(0x00000000U) != FLASH_OK) {
+        return;                          /* 칩 없음/불일치 → 안전 정지 */
+    }
+
+    /* 2) 이후엔 이렇게 간단하게 */
+    uint8_t buf[256];
+    Flash_ReadBytes(0x1000U, buf, sizeof(buf));     /* 읽기 (주소·길이 제약 없음) */
+
+    Flash_EraseRange(0x2000U, 4096U);               /* 영역 지우기 */
+    Flash_WriteBytes(0x2000U, buf, sizeof(buf));    /* 쓰기 (페이지 분할 자동) */
+}
+```
+
+| 함수 | 역할 |
+|------|------|
+| `Flash_BootInit(addr)` | 부팅 1회 초기화 (자동 감지·구성·잠금) |
+| `Flash_ReadBytes(addr, buf, len)` | `len`바이트 읽기 — 임의 주소/길이/정렬 |
+| `Flash_WriteBytes(addr, data, len)` | `len`바이트 쓰기 — 페이지 분할·보호 해제 자동 |
+| `Flash_EraseRange(addr, len)` | 구간 내 모든 섹터 지우기 |
+| `Flash_EraseChip()` | 전체 칩 지우기 |
+| `Flash_SizeBytes()` / `Flash_SectorSize()` | 용량·섹터 크기 조회 |
+
+> 고급 제어(특정 읽기 모드, CRC, SFC 튜닝, 블록 보호)가 필요하면 `flash.h`의 전체 API를 사용하세요.
+
+---
+
 ## 🌟 주요 특징 (Key Features)
 
 - **하이브리드 듀얼 패스 (Hybrid Dual-Path Architecture)**:
@@ -43,6 +80,8 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 ## 📁 파일 구성 (File Structure)
 
 ```text
+├── flash_easy.h     # ⭐ 간편 API (최종 사용자용 — ReadBytes/WriteBytes/EraseRange 등)
+├── flash_easy.c     # 간편 API 구현 (모드·단위·옵션 자동 선택)
 ├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
 ├── flash.c          # 드라이버 코어 엔진 (Init, Read, Program, Erase, Die Select 등)
 ├── flash_table.h    # Flash 모델 검색 인터페이스, FLASH_IDX 순서 enum 및 테이블 선언
@@ -66,7 +105,7 @@ GCC (MinGW / LLVM) 또는 ARM Compiler (ARMCC/ARMCLANG)를 통해 C99 표준으�
 
 ```bash
 # GCC 환경에서 C99 엄격 모드로 컴파일
-gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c test_flash.c -o test_flash.exe
+gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c flash_easy.c test_flash.c -o test_flash.exe
 
 # 검증 테스트 실행
 ./test_flash.exe
