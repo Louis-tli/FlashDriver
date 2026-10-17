@@ -45,13 +45,17 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 ```text
 ├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
 ├── flash.c          # 드라이버 코어 엔진 (Init, Read, Program, Erase, Die Select 등)
-├── flash_table.h    # Flash 모델 검색 인터페이스 및 테이블 선언
-├── flash_table.c    # 7종 Flash 메모리 ROM 테이블 (C99 Designated Initializer 적용)
+├── flash_table.h    # Flash 모델 검색 인터페이스, FLASH_IDX 순서 enum 및 테이블 선언
+├── flash_table.c    # 7종 Flash 메모리 ROM 테이블 (FLASH_IDX 순서, C99 Designated Initializer)
+├── flash_cmd.h      # Read/Program/Erase 명령 + 3B/4B 주소폭별 opcode 선택 인터페이스
+├── flash_cmd.c      # 명령 엔진 (주소폭별 opcode 분기, Enter-4B Method B 지원)
+├── flash_crc.h      # 소프트웨어 CRC/체크섬 알고리즘 인터페이스
+├── flash_crc.c      # CRC8 / CRC16 / CRC16-CCITT / CRC32 / CHECKSUM 구현
 ├── flash_sfc.h      # TCON SFC IP 하드웨어 레지스터 맵(ACCESS_UNIT 포함) 및 DMA API 헤더
 ├── flash_sfc.c      # TCON SFC IP 드라이버 구현 (Single/Quad 모드 전환, 단위별 2K/4K DMA Read)
 ├── flash_spi.h      # Low-Level SPI 컨트롤러 인터페이스 헤더
 ├── flash_spi.c      # Low-Level SPI 컨트롤러 드라이버 및 HW 추상화 스텁
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (20 suites)
 ```
 
 ---
@@ -62,7 +66,7 @@ GCC (MinGW / LLVM) 또는 ARM Compiler (ARMCC/ARMCLANG)를 통해 C99 표준으�
 
 ```bash
 # GCC 환경에서 C99 엄격 모드로 컴파일
-gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c test_flash.c -o test_flash.exe
+gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c test_flash.c -o test_flash.exe
 
 # 검증 테스트 실행
 ./test_flash.exe
@@ -71,10 +75,24 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목:
-1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭
+### 테스트 통과 항목 (20 suites):
+1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
 4. **Page Boundary Splitting**: 256바이트 경계 걸침 시 3회 분할 쓰기
 5. **Multi-Die Switching**: W25M512 32MB 경계 주소 접근 시 `0xC2` Software Die Select 자동 전환
-6. **Flash Read Units & SFC DMA Read**: Byte(1B), Halfword(2B), Word(4B, Default) 단위별 읽기 및 정렬 검증, SFC DMA 시퀀스 검증
+6. **Flash Read Units & SFC DMA Read**: Byte/Halfword/Word 단위별 읽기·정렬 검증, SFC DMA 시퀀스
+7. **Boot Config & Lock**: 부팅 설정블록 → 구성 → 잠금(불변) + CRC 변조 거부
+8. **Family Matching**: 제품군(제조사+Type) 일치 허용 / 이종 거부
+9. **No-Connect Fail-Safe**: ID 무응답 시 `NO_CONNECT` 안전 상태
+10. **Per-Die QE**: 멀티 다이(QE) 모든 다이에 적용
+11. **CRC Start/Continue + Algorithms**: 시작/계속 체이닝, crc8/crc32/checksum 선택
+12. **Direct SPI Guard**: Direct SPI는 Single 강제, Dual/Quad 거부
+13. **Protect/Unprotect**: 블록 보호 BP 비트 설정/해제
+14. **Write Auto-Clears BP**: 쓰기 시 BP 자동 해제(무음 실패 방지)
+15. **3B/4B Opcode Selection**: 주소폭별 opcode 자동 선택 + Method B(0xB7)
+16. **Init Option (NO_RESET)**: 소프트웨어 리셋 생략(fast boot) 옵션
+17. **Read Config Guard**: 제품별 DUAL_IO/QUAD_IO dummy 값 보존
+18. **WREN 50h vs 06h**: 지원 칩은 50h(VSR), 미지원은 06h 폴백
+19. **FLASH_IDX Access**: `g_flash_table[FLASH_IDX_x]` 인덱스 접근 패턴
+20. **CRC Algorithm from Boot Config**: 설정블록 `crc_algo`로 알고리즘 선택

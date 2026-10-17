@@ -40,6 +40,10 @@ typedef struct
 
     /* Reset (66h/99h) command counter for init-option testing */
     uint32_t reset_cmd_count;
+
+    /* Write-enable variant counters: 06h (WREN) vs 50h (VSR_WREN) */
+    uint32_t wren_count;
+    uint32_t vsr_wren_count;
 } MOCK_SPI_STATE;
 
 static MOCK_SPI_STATE s_mock;
@@ -124,6 +128,10 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 
         if (tx_byte == F_CMD_WREN) {
             s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
+            s_mock.wren_count++;
+        } else if (tx_byte == F_CMD_VSR_WREN) {
+            s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
+            s_mock.vsr_wren_count++;
         }
         else if (tx_byte == F_CMD_WRDI) {
             s_mock.sr1[s_mock.current_die] &= (uint8_t)(~FLASH_SR1_WEL);
@@ -766,6 +774,101 @@ static void Test_TableReadCfgGuard(void)
     printf("  - Per-device DUAL_IO / QUAD_IO dummy values intact. PASSED.\n\n");
 }
 
+static void Test_VsrWriteEnable(void)
+{
+    printf("[TEST 18] WREN 50h (volatile) vs 06h selection...\n");
+
+    /* W25Q256JV has FLASH_FEAT_VSR_WREN -> status writes use 50h */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+
+    s_mock.wren_count = 0U; s_mock.vsr_wren_count = 0U;
+    assert(Flash_WriteEnable() == FLASH_OK);
+    assert(s_mock.wren_count == 1U && s_mock.vsr_wren_count == 0U);
+
+    s_mock.wren_count = 0U; s_mock.vsr_wren_count = 0U;
+    assert(Flash_WriteEnableVolatile() == FLASH_OK);
+    assert(s_mock.vsr_wren_count == 1U && s_mock.wren_count == 0U);
+
+    s_mock.wren_count = 0U; s_mock.vsr_wren_count = 0U;
+    assert(Flash_WriteStatus(1U, 0x00U) == FLASH_OK);
+    assert(s_mock.vsr_wren_count == 1U && s_mock.wren_count == 0U);
+    printf("  - W25Q256JV (VSR_WREN): WriteEnable=06h, Volatile=50h, StatusWrite=50h.\n");
+
+    /* MX25L512 has no VSR flag -> status writes fall back to 06h */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC22010U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    s_mock.wren_count = 0U; s_mock.vsr_wren_count = 0U;
+    assert(Flash_WriteStatus(1U, 0x00U) == FLASH_OK);
+    assert(s_mock.wren_count == 1U && s_mock.vsr_wren_count == 0U);
+    printf("  - MX25L512 (no flag): StatusWrite=06h fallback. PASSED.\n\n");
+}
+
+static void Test_FlashIdxAccess(void)
+{
+    printf("[TEST 19] FLASH_IDX table access pattern...\n");
+
+    /* Owner's usage: Flash_FindDevice(g_flash_table[FLASH_IDX_W25Q256JV].jedec_id) */
+    const FLASH_INFO *w25q256 = Flash_FindDevice(g_flash_table[FLASH_IDX_W25Q256JV].jedec_id);
+    assert(w25q256 != NULL);
+    assert(w25q256->jedec_id == 0xEF4019U);
+    assert(w25q256->model_id == FLASH_MODEL_W25Q256JV);
+
+    /* Index order must match the FLASH_IDX enum exactly */
+    assert(g_flash_table[FLASH_IDX_W25Q128JW].jedec_id == 0xEF6018U);
+    assert(g_flash_table[FLASH_IDX_W25Q512JV].jedec_id == 0xEF4020U);
+    assert(g_flash_table[FLASH_IDX_W25Q256JV].jedec_id == 0xEF4019U);
+    assert(g_flash_table[FLASH_IDX_W25M512].jedec_id == 0xEF6119U);
+    assert(g_flash_table[FLASH_IDX_MX25L512].jedec_id == 0xC22010U);
+    assert(g_flash_table[FLASH_IDX_MX25L512MB].jedec_id == 0xC2201AU);
+    assert(g_flash_table[FLASH_IDX_GD25LQ64E].jedec_id == 0xC86017U);
+    printf("  - FLASH_IDX order + FindDevice access verified. PASSED.\n\n");
+}
+
+static void Test_CrcAlgoBootSelect(void)
+{
+    uint32_t aligned_buf[1024];
+
+    printf("[TEST 20] CRC algorithm selected from boot config...\n");
+
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    Mock_SetBootConfig(0xEF4019U, 4096U, FLASH_FEAT_QUAD);
+
+    /* Override crc_algo = CHECKSUM in the settings block and fix its CRC */
+    FLASH_BOOT_CONFIG cfg;
+    memcpy(&cfg, s_mock.config_buf, sizeof(cfg));
+    cfg.crc_algo = (uint8_t)FLASH_CRC_CHECKSUM;
+    cfg.crc = Flash_ConfigCrc(&cfg);
+    memcpy(s_mock.config_buf, &cfg, sizeof(cfg));
+
+    int status = Flash_BootInit(0x00000000U);
+    assert(status == FLASH_OK);
+    assert(g_flash_handle.crc_algo == FLASH_CRC_CHECKSUM);
+
+    /* Read with CRC: the selected CHECKSUM algorithm is used ... */
+    status = Flash_Read(0x00001000U, aligned_buf, 1024U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC);
+    assert(status == FLASH_OK);
+    const uint32_t crc_sum = Flash_GetLastCRC();
+
+    /* ... and it differs from the CRC32 default */
+    g_flash_handle.crc_algo = FLASH_CRC32;
+    status = Flash_Read(0x00001000U, aligned_buf, 1024U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC);
+    assert(status == FLASH_OK);
+    const uint32_t crc_32 = Flash_GetLastCRC();
+
+    printf("  - crc_algo=CHECKSUM from config: checksum=%08X vs crc32=%08X\n", crc_sum, crc_32);
+    assert(crc_sum != crc_32);
+    printf("  - Boot-config CRC algorithm selection verified. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -791,9 +894,12 @@ int main(void)
     Test_AddrModeOpcodes();
     Test_InitNoReset();
     Test_TableReadCfgGuard();
+    Test_VsrWriteEnable();
+    Test_FlashIdxAccess();
+    Test_CrcAlgoBootSelect();
 
     printf("================================================================\n");
-    printf(" ALL 17 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 20 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;
