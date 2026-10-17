@@ -35,8 +35,7 @@ FLASH_HANDLE g_flash_handle =
  ******************************************************************************/
 static void Flash_DelayLoops(uint32_t count)
 {
-    for (volatile uint32_t i = 0U; i < count; i++)
-    {
+    for (volatile uint32_t i = 0U; i < count; i++) {
         /* No-op loop */
     }
 }
@@ -47,29 +46,24 @@ static void Flash_DelayLoops(uint32_t count)
 static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
-    if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U)
-    {
-        if (info->die_size == 0U)
-        {
+    if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
+        if (info->die_size == 0U) {
             return FLASH_ERR_PARAM;
         }
 
         const uint8_t target_die = (uint8_t)(addr / info->die_size);
-        if (target_die >= info->die_count)
-        {
+        if (target_die >= info->die_count) {
             return FLASH_ERR_PARAM;
         }
 
         *p_die = target_die;
         *p_die_addr = addr % info->die_size;
     }
-    else
-    {
+    else {
         *p_die = 0U;
         *p_die_addr = addr;
     }
@@ -82,8 +76,7 @@ static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
  ******************************************************************************/
 static FLASH_ADDR_MODE Flash_ResolveAddrMode(uint8_t cfg_mode, const FLASH_INFO *info)
 {
-    if (cfg_mode == (uint8_t)FLASH_ADDR_MODE_DEFAULT)
-    {
+    if (cfg_mode == (uint8_t)FLASH_ADDR_MODE_DEFAULT) {
         /* Default: derive from the device's native width (Method A for 4-Byte). */
         return (info->addr_bytes == 4U) ? FLASH_ADDR_4BYTE_OPCODE : FLASH_ADDR_3BYTE;
     }
@@ -98,21 +91,18 @@ static FLASH_ADDR_MODE Flash_ResolveAddrMode(uint8_t cfg_mode, const FLASH_INFO 
 static int Flash_ApplyDieConfig(void)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
     /* Enter-4-Byte mode (B7h) is only needed for Method B (FLASH_ADDR_4BYTE_ENTER). */
-    if (Flash_CmdNeedsEnter4b(g_flash_handle.addr_mode))
-    {
+    if (Flash_CmdNeedsEnter4b(g_flash_handle.addr_mode)) {
         Flash_SPI_SendCmd(F_CMD_ENTER_4BYTE_ADDR);
         (void)Flash_WaitBusy(10000U);
     }
 
     /* Verify / enable Quad Mode on this die */
-    if ((info->features & FLASH_FEAT_QUAD) != 0U)
-    {
+    if ((info->features & FLASH_FEAT_QUAD) != 0U) {
         return Flash_EnableQuad();
     }
 
@@ -125,23 +115,18 @@ static int Flash_ApplyDieConfig(void)
 static int Flash_ApplyProductInit(void)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
-    if (((info->features & FLASH_FEAT_MULTI_DIE) != 0U) && (info->die_count > 1U))
-    {
-        for (uint8_t d = 0U; d < info->die_count; d++)
-        {
+    if (((info->features & FLASH_FEAT_MULTI_DIE) != 0U) && (info->die_count > 1U)) {
+        for (uint8_t d = 0U; d < info->die_count; d++) {
             int status = Flash_SelectDie(d);
-            if (status != FLASH_OK)
-            {
+            if (status != FLASH_OK) {
                 return status;
             }
             status = Flash_ApplyDieConfig();
-            if (status != FLASH_OK)
-            {
+            if (status != FLASH_OK) {
                 return status;
             }
         }
@@ -156,16 +141,14 @@ static int Flash_ApplyProductInit(void)
  ******************************************************************************/
 uint32_t Flash_ConfigCrc(const FLASH_BOOT_CONFIG *cfg)
 {
-    if (cfg == NULL)
-    {
+    if (cfg == NULL) {
         return 0U;
     }
 
     const uint8_t *p = (const uint8_t *)cfg;
     const uint32_t n = (uint32_t)(sizeof(FLASH_BOOT_CONFIG) - sizeof(uint32_t));
     uint32_t sum = 0x5A5A5A5AU;
-    for (uint32_t i = 0U; i < n; i++)
-    {
+    for (uint32_t i = 0U; i < n; i++) {
         sum += (uint32_t)p[i];
     }
     return sum;
@@ -176,8 +159,7 @@ uint32_t Flash_ConfigCrc(const FLASH_BOOT_CONFIG *cfg)
  ******************************************************************************/
 int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
 {
-    if ((buf == NULL) || (len == 0U))
-    {
+    if ((buf == NULL) || (len == 0U)) {
         return FLASH_ERR_PARAM;
     }
 
@@ -197,8 +179,7 @@ int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
 int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
 {
     /* Once the selection is locked it is immutable for the rest of the boot. */
-    if (g_flash_handle.locked)
-    {
+    if (g_flash_handle.locked) {
         return FLASH_ERR_BUSY;
     }
 
@@ -209,8 +190,7 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
 
     /* 2. Software Reset to clear any stale bus state (skippable for fast boot) */
-    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U)
-    {
+    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U) {
         (void)Flash_Reset();
         Flash_DelayLoops(50000U);
     }
@@ -218,14 +198,12 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     /* 3. Read JEDEC ID and confirm the device responds */
     uint32_t jedec_id = 0U;
     int status = Flash_ReadJEDECID(&jedec_id);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
     jedec_id &= FLASH_JEDEC_ID_MASK;
-    if ((jedec_id == 0x000000U) || (jedec_id == 0xFFFFFFU))
-    {
+    if ((jedec_id == 0x000000U) || (jedec_id == 0xFFFFFFU)) {
         g_flash_handle.state = FLASH_STATE_NO_CONNECT;
         return FLASH_ERR_NO_CONNECT;
     }
@@ -233,16 +211,14 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     /* 4. Basic-read the boot settings block from Flash */
     FLASH_BOOT_CONFIG cfg;
     status = Flash_BasicRead(config_addr, &cfg, (uint32_t)sizeof(cfg));
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
 
     /* 5. Validate settings block (magic + checksum) */
     if ((cfg.magic != FLASH_BOOT_CFG_MAGIC) ||
-        (cfg.crc != Flash_ConfigCrc(&cfg)))
-    {
+        (cfg.crc != Flash_ConfigCrc(&cfg))) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_PARAM;
     }
@@ -250,24 +226,20 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     /* 6. Look up the selected product. The config's model field selects an exact
      *    variant when needed; otherwise fall back to the expected JEDEC ID. */
     const FLASH_INFO *p_info = NULL;
-    if (cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN)
-    {
+    if (cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN) {
         p_info = Flash_FindDeviceByModel((FLASH_MODEL)cfg.model);
     }
-    if (p_info == NULL)
-    {
+    if (p_info == NULL) {
         p_info = Flash_FindDevice(cfg.jedec_expect);
     }
-    if (p_info == NULL)
-    {
+    if (p_info == NULL) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
     }
 
     /* 7. Fail-safe validation: the actual device must match the selection
      *    (exact or same product family). A wrong / unknown ID is refused. */
-    if (!Flash_FamilyMatch(jedec_id, cfg.jedec_expect))
-    {
+    if (!Flash_FamilyMatch(jedec_id, cfg.jedec_expect)) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
     }
@@ -281,16 +253,14 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     g_flash_handle.qe_enabled   = false;
     g_flash_handle.last_crc     = 0U;
     if ((cfg.sfc_page_size == SFC_DEFAULT_PAGE_SIZE_2K) ||
-        (cfg.sfc_page_size == SFC_DEFAULT_PAGE_SIZE_4K))
-    {
+        (cfg.sfc_page_size == SFC_DEFAULT_PAGE_SIZE_4K)) {
         g_flash_handle.sfc_page_size = cfg.sfc_page_size;
         Flash_SFC_Init(cfg.sfc_page_size);
     }
 
     /* 9. Apply non-common config to every die (QE + 4-Byte mode) */
     status = Flash_ApplyProductInit();
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
@@ -323,8 +293,7 @@ int Flash_InitOpt(uint32_t options)
     g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
 
     /* 4. Issue Software Reset to clear any prior bus states (skippable) */
-    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U)
-    {
+    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U) {
         (void)Flash_Reset();
         Flash_DelayLoops(50000U);
     }
@@ -332,23 +301,20 @@ int Flash_InitOpt(uint32_t options)
     /* 5. Read JEDEC Identification (9Fh) */
     uint32_t jedec_id = 0U;
     int status = Flash_ReadJEDECID(&jedec_id);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
 
     /* Check for floating/unconnected bus (all 0s or all 1s) */
-    if ((jedec_id == 0x00000000U) || (jedec_id == 0x00FFFFFFU))
-    {
+    if ((jedec_id == 0x00000000U) || (jedec_id == 0x00FFFFFFU)) {
         g_flash_handle.state = FLASH_STATE_NO_CONNECT;
         return FLASH_ERR_NO_CONNECT;
     }
 
     /* 6. Lookup device configuration from ROM table */
     const FLASH_INFO *p_info = Flash_FindDevice(jedec_id);
-    if (p_info == NULL)
-    {
+    if (p_info == NULL) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
     }
@@ -356,14 +322,14 @@ int Flash_InitOpt(uint32_t options)
     /* Populate runtime handle */
     g_flash_handle.info         = p_info;
     g_flash_handle.addr_mode    = Flash_ResolveAddrMode((uint8_t)FLASH_ADDR_MODE_DEFAULT, p_info);
+    g_flash_handle.crc_algo     = FLASH_CRC32;
     g_flash_handle.current_die  = 0U;
     g_flash_handle.qe_enabled   = false;
     g_flash_handle.last_crc     = 0U;
 
     /* 7. Apply non-common config to every die (4-Byte mode + QE) */
     status = Flash_ApplyProductInit();
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
@@ -404,8 +370,7 @@ int Flash_ReadJEDECID(uint32_t *p_jedec_id)
 {
     uint8_t id_buf[3];
 
-    if (p_jedec_id == NULL)
-    {
+    if (p_jedec_id == NULL) {
         return FLASH_ERR_PARAM;
     }
 
@@ -428,13 +393,11 @@ int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val)
 {
     uint8_t cmd;
 
-    if (p_val == NULL)
-    {
+    if (p_val == NULL) {
         return FLASH_ERR_PARAM;
     }
 
-    switch (reg_idx)
-    {
+    switch (reg_idx) {
         case 1U:
             cmd = F_CMD_RDSR1;
             break;
@@ -461,15 +424,12 @@ int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val)
  ******************************************************************************/
 int Flash_WriteEnable(void)
 {
-    for (uint32_t retry = 0U; retry < 5U; retry++)
-    {
+    for (uint32_t retry = 0U; retry < 5U; retry++) {
         Flash_SPI_SendCmd(F_CMD_WREN);
 
         uint8_t sr1 = 0U;
-        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK)
-        {
-            if ((sr1 & FLASH_SR1_WEL) != 0U)
-            {
+        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK) {
+            if ((sr1 & FLASH_SR1_WEL) != 0U) {
                 return FLASH_OK;
             }
         }
@@ -484,15 +444,12 @@ int Flash_WriteEnable(void)
  ******************************************************************************/
 int Flash_WriteEnableVolatile(void)
 {
-    for (uint32_t retry = 0U; retry < 5U; retry++)
-    {
+    for (uint32_t retry = 0U; retry < 5U; retry++) {
         Flash_SPI_SendCmd(F_CMD_VSR_WREN);
 
         uint8_t sr1 = 0U;
-        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK)
-        {
-            if ((sr1 & FLASH_SR1_WEL) != 0U)
-            {
+        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK) {
+            if ((sr1 & FLASH_SR1_WEL) != 0U) {
                 return FLASH_OK;
             }
         }
@@ -516,13 +473,10 @@ int Flash_WriteDisable(void)
  ******************************************************************************/
 int Flash_WaitBusy(uint32_t timeout_loops)
 {
-    for (uint32_t i = 0U; i < timeout_loops; i++)
-    {
+    for (uint32_t i = 0U; i < timeout_loops; i++) {
         uint8_t sr1 = 0U;
-        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK)
-        {
-            if ((sr1 & FLASH_SR1_BUSY) == 0U)
-            {
+        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK) {
+            if ((sr1 & FLASH_SR1_BUSY) == 0U) {
                 return FLASH_OK;
             }
         }
@@ -538,8 +492,7 @@ int Flash_WaitBusy(uint32_t timeout_loops)
 static int Flash_SrWriteEnable(void)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if ((info != NULL) && ((info->features & FLASH_FEAT_VSR_WREN) != 0U))
-    {
+    if ((info != NULL) && ((info->features & FLASH_FEAT_VSR_WREN) != 0U)) {
         return Flash_WriteEnableVolatile();
     }
     return Flash_WriteEnable();
@@ -551,24 +504,20 @@ static int Flash_SrWriteEnable(void)
 int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
     /* GigaDevice (GD25LQ64E) uses 2-byte WRSR (01h) writing SR1 and SR2 simultaneously */
-    if (((info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U) && (reg_idx == 2U))
-    {
+    if (((info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U) && (reg_idx == 2U)) {
         uint8_t sr1 = 0U;
         int status = Flash_ReadStatus(1U, &sr1);
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
         status = Flash_SrWriteEnable();
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
@@ -583,29 +532,24 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 
     /* Standard Status Register Write */
     int status = Flash_SrWriteEnable();
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
     Flash_SPI_CS_Low();
-    if (reg_idx == 1U)
-    {
+    if (reg_idx == 1U) {
         (void)Flash_SPI_TransferByte(F_CMD_WRSR1);
         (void)Flash_SPI_TransferByte(val);
     }
-    else if (reg_idx == 2U)
-    {
+    else if (reg_idx == 2U) {
         (void)Flash_SPI_TransferByte(F_CMD_WRSR2);
         (void)Flash_SPI_TransferByte(val);
     }
-    else if (reg_idx == 3U)
-    {
+    else if (reg_idx == 3U) {
         (void)Flash_SPI_TransferByte(F_CMD_WRSR3);
         (void)Flash_SPI_TransferByte(val);
     }
-    else
-    {
+    else {
         Flash_SPI_CS_High();
         return FLASH_ERR_PARAM;
     }
@@ -620,15 +564,13 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 int Flash_Unprotect(void)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
     uint8_t sr1 = 0U;
     int status = Flash_ReadStatus(1U, &sr1);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
@@ -636,8 +578,7 @@ int Flash_Unprotect(void)
     const uint8_t clear_mask = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
                                          FLASH_SR1_BP2 | FLASH_SR1_BP3);
     const uint8_t new_sr1 = (uint8_t)(sr1 & (uint8_t)(~clear_mask));
-    if (new_sr1 == sr1)
-    {
+    if (new_sr1 == sr1) {
         return FLASH_OK;   /* already unprotected */
     }
 
@@ -650,15 +591,13 @@ int Flash_Unprotect(void)
 int Flash_Protect(uint8_t bp_mask)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
     uint8_t sr1 = 0U;
     int status = Flash_ReadStatus(1U, &sr1);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
@@ -677,27 +616,23 @@ int Flash_Protect(uint8_t bp_mask)
 int Flash_EnableQuad(void)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
-    if (info->qe_reg == 0U)
-    {
+    if (info->qe_reg == 0U) {
         g_flash_handle.qe_enabled = true;
         return FLASH_OK;
     }
 
     uint8_t qe_val = 0U;
     int status = Flash_ReadStatus(info->qe_reg, &qe_val);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
     const uint8_t qe_mask = (uint8_t)(1U << info->qe_bit);
-    if ((qe_val & qe_mask) != 0U)
-    {
+    if ((qe_val & qe_mask) != 0U) {
         /* QE is already enabled */
         g_flash_handle.qe_enabled = true;
         return FLASH_OK;
@@ -706,20 +641,17 @@ int Flash_EnableQuad(void)
     /* Set QE bit and write back */
     qe_val |= qe_mask;
     status = Flash_WriteStatus(info->qe_reg, qe_val);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
     /* Read back to verify */
     status = Flash_ReadStatus(info->qe_reg, &qe_val);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
-    if ((qe_val & qe_mask) == 0U)
-    {
+    if ((qe_val & qe_mask) == 0U) {
         return FLASH_ERR_WRITE_FAIL;
     }
 
@@ -733,22 +665,18 @@ int Flash_EnableQuad(void)
 int Flash_SelectDie(uint8_t die_idx)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
-    if ((info->features & FLASH_FEAT_MULTI_DIE) == 0U)
-    {
+    if ((info->features & FLASH_FEAT_MULTI_DIE) == 0U) {
         return FLASH_OK;
     }
 
-    if (die_idx >= info->die_count)
-    {
+    if (die_idx >= info->die_count) {
         return FLASH_ERR_PARAM;
     }
 
-    if (g_flash_handle.current_die == die_idx)
-    {
+    if (g_flash_handle.current_die == die_idx) {
         return FLASH_OK;
     }
 
@@ -776,8 +704,7 @@ static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_
     Flash_SFC_SetSingleMode();
 
     int status = Flash_WaitBusy(100000U);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
@@ -792,14 +719,12 @@ static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chu
                                  const FLASH_READ_CFG *read_cfg)
 {
     /* Direct SPI path is single-width only (Dual/Quad require SFC). */
-    if (read_cfg->io_width > 1U)
-    {
+    if (read_cfg->io_width > 1U) {
         return FLASH_ERR_PARAM;
     }
 
     int status = Flash_WaitBusy(100000U);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
@@ -807,12 +732,10 @@ static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chu
     (void)Flash_SPI_TransferByte(Flash_CmdRead(read_cfg, g_flash_handle.addr_mode));
     Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
 
-    if (read_cfg->mode_byte != 0x00U)
-    {
+    if (read_cfg->mode_byte != 0x00U) {
         (void)Flash_SPI_TransferByte(read_cfg->mode_byte);
     }
-    for (uint32_t i = 0U; i < read_cfg->dummy_bytes; i++)
-    {
+    for (uint32_t i = 0U; i < read_cfg->dummy_bytes; i++) {
         (void)Flash_SPI_TransferByte(read_cfg->dummy_value);
     }
 
@@ -831,38 +754,31 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 {
     /* Unit Resolution: default (0) or WORD (4) -> 4 bytes, HALFWORD (2) -> 2 bytes, BYTE (1) -> 1 byte */
     uint8_t effective_unit;
-    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD))
-    {
+    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD)) {
         effective_unit = 4U;
     }
-    else if (unit == FLASH_READ_UNIT_HALFWORD)
-    {
+    else if (unit == FLASH_READ_UNIT_HALFWORD) {
         effective_unit = 2U;
     }
-    else if (unit == FLASH_READ_UNIT_BYTE)
-    {
+    else if (unit == FLASH_READ_UNIT_BYTE) {
         effective_unit = 1U;
     }
-    else
-    {
+    else {
         return FLASH_ERR_PARAM;
     }
 
-    if ((buf == NULL) || (count == 0U) || (mode >= FLASH_READ_MODE_MAX))
-    {
+    if ((buf == NULL) || (count == 0U) || (mode >= FLASH_READ_MODE_MAX)) {
         return FLASH_ERR_PARAM;
     }
 
     /* Cortex-M0 Alignment check based on effective unit */
     if (!Flash_IsAligned((uintptr_t)buf, (uint32_t)effective_unit) ||
-        !Flash_IsAligned(addr, (uint32_t)effective_unit))
-    {
+        !Flash_IsAligned(addr, (uint32_t)effective_unit)) {
         return FLASH_ERR_ALIGNMENT;
     }
 
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
@@ -872,56 +788,57 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
     uint32_t remaining = total_bytes;
     uint32_t current_addr = addr;
 
-    const bool use_crc = ((options & FLASH_READ_OPT_CRC) != 0U);
+    const bool crc_start = ((options & FLASH_READ_OPT_CRC) != 0U);
+    const bool crc_cont  = ((options & FLASH_READ_OPT_CRC_CONT) != 0U);
+    const bool do_crc    = (crc_start || crc_cont);
+    uint32_t crc_run = 0U;
 
-    /* Reset the CRC engine once for the whole transfer (accumulate across chunks) */
-    if (use_crc)
-    {
-        Flash_SFC_CrcReset();
-        g_flash_handle.last_crc = 0U;
+    /* Start fresh or continue from the previous accumulated value */
+    if (crc_start) {
+        crc_run = Flash_CrcInit(g_flash_handle.crc_algo);
+    }
+    else if (crc_cont) {
+        crc_run = g_flash_handle.last_crc;
     }
 
     /* Loop over transfer to handle Multi-Die boundary crossings if any */
-    while (remaining > 0U)
-    {
+    while (remaining > 0U) {
         uint8_t target_die = 0U;
         uint32_t die_addr = 0U;
         int status = Flash_ResolveDie(current_addr, &target_die, &die_addr);
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
         status = Flash_SelectDie(target_die);
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
         /* Calculate contiguous chunk size within active die */
         uint32_t chunk_len = remaining;
-        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U)
-        {
+        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
             const uint32_t die_remaining = info->die_size - die_addr;
-            if (chunk_len > die_remaining)
-            {
+            if (chunk_len > die_remaining) {
                 chunk_len = die_remaining;
             }
         }
 
         /* Execute the transfer via the appropriate per-chunk read path */
-        if ((options & FLASH_READ_OPT_SFC) != 0U)
-        {
+        if ((options & FLASH_READ_OPT_SFC) != 0U) {
             status = Flash_ReadChunkSFC(die_addr, p_buf, chunk_len, (uint32_t)effective_unit,
-                                        unit, read_cfg, use_crc);
+                                        unit, read_cfg, false);
         }
-        else
-        {
+        else {
             status = Flash_ReadChunkDirect(die_addr, p_buf, chunk_len, read_cfg);
         }
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
+        }
+
+        /* Fold this chunk's data into the running software CRC */
+        if (do_crc) {
+            crc_run = Flash_CrcUpdate(g_flash_handle.crc_algo, crc_run, p_buf, chunk_len);
         }
 
         current_addr += chunk_len;
@@ -929,10 +846,9 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         remaining    -= chunk_len;
     }
 
-    /* Expose the accumulated CRC (all chunks combined) */
-    if (use_crc)
-    {
-        g_flash_handle.last_crc = Flash_SFC_CrcGet();
+    /* Expose the accumulated CRC (running value; finalized by Flash_GetLastCRC) */
+    if (do_crc) {
+        g_flash_handle.last_crc = crc_run;
     }
 
     return FLASH_OK;
@@ -944,14 +860,12 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
                 FLASH_PROGRAM_MODE mode)
 {
-    if ((buf == NULL) || (len == 0U))
-    {
+    if ((buf == NULL) || (len == 0U)) {
         return FLASH_ERR_PARAM;
     }
 
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
@@ -960,27 +874,23 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
     uint32_t remaining = len;
     uint32_t current_addr = addr;
 
-    while (remaining > 0U)
-    {
+    while (remaining > 0U) {
         uint8_t target_die = 0U;
         uint32_t die_addr = 0U;
         int status = Flash_ResolveDie(current_addr, &target_die, &die_addr);
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
         status = Flash_SelectDie(target_die);
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
         /* SW-013 / G2: clear block-protect on this die so the program cannot
          * silently fail on a protected region. */
         status = Flash_Unprotect();
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
@@ -989,26 +899,22 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         uint32_t chunk_len = (remaining > bytes_to_boundary) ? bytes_to_boundary : remaining;
 
         /* Also clamp to die boundary if multi-die */
-        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U)
-        {
+        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
             const uint32_t die_remaining = info->die_size - die_addr;
-            if (chunk_len > die_remaining)
-            {
+            if (chunk_len > die_remaining) {
                 chunk_len = die_remaining;
             }
         }
 
         /* 1. Wait until device is ready */
         status = Flash_WaitBusy(100000U);
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
         /* 2. Issue Write Enable */
         status = Flash_WriteEnable();
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
@@ -1017,20 +923,17 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         (void)Flash_SPI_TransferByte(prog_cmd);
         Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
 
-        if (mode == FLASH_PROGRAM_QUAD)
-        {
+        if (mode == FLASH_PROGRAM_QUAD) {
             Flash_SPI_WriteQuadData(p_src, chunk_len);
         }
-        else
-        {
+        else {
             Flash_SPI_WriteData(p_src, chunk_len);
         }
         Flash_SPI_CS_High();
 
         /* 4. Wait for Program cycle completion */
         status = Flash_WaitBusy(200000U);
-        if (status != FLASH_OK)
-        {
+        if (status != FLASH_OK) {
             return status;
         }
 
@@ -1048,34 +951,27 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
 int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL)
-    {
+    if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
     /* Full Chip Erase handling */
-    if (mode == FLASH_ERASE_CHIP)
-    {
-        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U)
-        {
+    if (mode == FLASH_ERASE_CHIP) {
+        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
             /* Erase each die sequentially for W25M512 */
-            for (uint8_t d = 0U; d < info->die_count; d++)
-            {
+            for (uint8_t d = 0U; d < info->die_count; d++) {
                 int status = Flash_SelectDie(d);
-                if (status != FLASH_OK)
-                {
+                if (status != FLASH_OK) {
                     return status;
                 }
 
                 status = Flash_WaitBusy(200000U);
-                if (status != FLASH_OK)
-                {
+                if (status != FLASH_OK) {
                     return status;
                 }
 
                 status = Flash_WriteEnable();
-                if (status != FLASH_OK)
-                {
+                if (status != FLASH_OK) {
                     return status;
                 }
 
@@ -1083,24 +979,20 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
 
                 /* Chip erase can take multiple seconds */
                 status = Flash_WaitBusy(50000000U);
-                if (status != FLASH_OK)
-                {
+                if (status != FLASH_OK) {
                     return status;
                 }
             }
             return FLASH_OK;
         }
-        else
-        {
+        else {
             int status = Flash_WaitBusy(200000U);
-            if (status != FLASH_OK)
-            {
+            if (status != FLASH_OK) {
                 return status;
             }
 
             status = Flash_WriteEnable();
-            if (status != FLASH_OK)
-            {
+            if (status != FLASH_OK) {
                 return status;
             }
 
@@ -1113,39 +1005,33 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
     uint8_t target_die = 0U;
     uint32_t die_addr = 0U;
     int status = Flash_ResolveDie(addr, &target_die, &die_addr);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
     status = Flash_SelectDie(target_die);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
     /* SW-013 / G2: clear block-protect on this die so the erase cannot fail silently. */
     status = Flash_Unprotect();
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
     const uint8_t erase_cmd = Flash_CmdErase(mode, g_flash_handle.addr_mode);
-    if (erase_cmd == 0x00U)
-    {
+    if (erase_cmd == 0x00U) {
         return FLASH_ERR_PARAM;
     }
 
     status = Flash_WaitBusy(200000U);
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
     status = Flash_WriteEnable();
-    if (status != FLASH_OK)
-    {
+    if (status != FLASH_OK) {
         return status;
     }
 
@@ -1172,7 +1058,7 @@ const FLASH_INFO *Flash_GetInfo(void)
 
 uint32_t Flash_GetLastCRC(void)
 {
-    return g_flash_handle.last_crc;
+    return Flash_CrcFinal(g_flash_handle.crc_algo, g_flash_handle.last_crc);
 }
 
 bool Flash_IsLocked(void)

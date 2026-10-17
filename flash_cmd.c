@@ -32,8 +32,7 @@ bool Flash_CmdNeedsEnter4b(FLASH_ADDR_MODE mode)
  ******************************************************************************/
 uint8_t Flash_CmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
 {
-    if (cfg == NULL)
-    {
+    if (cfg == NULL) {
         return 0x00U;
     }
     return Flash_CmdUse4bOpcode(mode) ? cfg->command_4b : cfg->command;
@@ -46,8 +45,7 @@ uint8_t Flash_CmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode
 {
     const bool is_quad = (prog_mode == FLASH_PROGRAM_QUAD);
 
-    if (Flash_CmdUse4bOpcode(addr_mode))
-    {
+    if (Flash_CmdUse4bOpcode(addr_mode)) {
         return is_quad ? F_CMD_QUAD_PAGE_PROGRAM_4B : F_CMD_PAGE_PROGRAM_4B;
     }
     return is_quad ? F_CMD_QUAD_PAGE_PROGRAM : F_CMD_PAGE_PROGRAM;
@@ -60,8 +58,7 @@ uint8_t Flash_CmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode)
 {
     const bool use_4b = Flash_CmdUse4bOpcode(addr_mode);
 
-    switch (erase_mode)
-    {
+    switch (erase_mode) {
         case FLASH_ERASE_SECTOR:
             return use_4b ? F_CMD_SECTOR_ERASE_4B : F_CMD_SECTOR_ERASE;
         case FLASH_ERASE_BLOCK_32K:

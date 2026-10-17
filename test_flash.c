@@ -64,8 +64,7 @@ static void Mock_Reset(void)
 /* Set the status registers for both dies (keeps old single-value call sites simple). */
 static void Mock_SetStatus(uint8_t sr1, uint8_t sr2, uint8_t sr3)
 {
-    for (int d = 0; d < 2; d++)
-    {
+    for (int d = 0; d < 2; d++) {
         s_mock.sr1[d] = sr1;
         s_mock.sr2[d] = sr2;
         s_mock.sr3[d] = sr3;
@@ -119,56 +118,45 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 {
     uint8_t rx_byte = 0xFFU;
 
-    if (s_mock.cmd_byte_index == 0U)
-    {
+    if (s_mock.cmd_byte_index == 0U) {
         s_mock.current_cmd = tx_byte;
         s_mock.cmd_byte_index = 1U;
 
-        if (tx_byte == F_CMD_WREN)
-        {
+        if (tx_byte == F_CMD_WREN) {
             s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
         }
-        else if (tx_byte == F_CMD_WRDI)
-        {
+        else if (tx_byte == F_CMD_WRDI) {
             s_mock.sr1[s_mock.current_die] &= (uint8_t)(~FLASH_SR1_WEL);
         }
-        else if (tx_byte == F_CMD_ENTER_4BYTE_ADDR)
-        {
+        else if (tx_byte == F_CMD_ENTER_4BYTE_ADDR) {
             s_mock.entered_4byte[s_mock.current_die] = true;
         }
-        else if ((tx_byte == F_CMD_RESET_ENABLE) || (tx_byte == F_CMD_RESET_DEVICE))
-        {
+        else if ((tx_byte == F_CMD_RESET_ENABLE) || (tx_byte == F_CMD_RESET_DEVICE)) {
             s_mock.reset_cmd_count++;
         }
         return 0x00U;
     }
 
-    switch (s_mock.current_cmd)
-    {
+    switch (s_mock.current_cmd) {
         case F_CMD_RDID: /* 9Fh */
-            if (s_mock.cmd_byte_index == 1U)
-            {
+            if (s_mock.cmd_byte_index == 1U) {
                 rx_byte = (uint8_t)((s_mock.mock_jedec_id >> 16) & 0xFFU);
             }
-            else if (s_mock.cmd_byte_index == 2U)
-            {
+            else if (s_mock.cmd_byte_index == 2U) {
                 rx_byte = (uint8_t)((s_mock.mock_jedec_id >> 8) & 0xFFU);
             }
-            else if (s_mock.cmd_byte_index == 3U)
-            {
+            else if (s_mock.cmd_byte_index == 3U) {
                 rx_byte = (uint8_t)(s_mock.mock_jedec_id & 0xFFU);
             }
             s_mock.cmd_byte_index++;
             break;
 
         case F_CMD_READ: /* 03h : serve the boot settings block after cmd + 3 addr */
-            if (s_mock.cmd_byte_index >= 4U)
-            {
+            if (s_mock.cmd_byte_index >= 4U) {
                 const uint32_t idx = s_mock.cmd_byte_index - 4U;
                 rx_byte = (idx < s_mock.config_len) ? s_mock.config_buf[idx] : 0xFFU;
             }
-            else
-            {
+            else {
                 rx_byte = 0x00U; /* address phase */
             }
             s_mock.cmd_byte_index++;
@@ -185,13 +173,11 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             break;
 
         case F_CMD_WRSR1: /* 01h : 1-byte (SR1) or 2-byte (SR1+SR2) */
-            if (s_mock.cmd_byte_index == 1U)
-            {
+            if (s_mock.cmd_byte_index == 1U) {
                 s_mock.sr1[s_mock.current_die] = tx_byte;
                 s_mock.cmd_byte_index++;
             }
-            else if (s_mock.cmd_byte_index == 2U)
-            {
+            else if (s_mock.cmd_byte_index == 2U) {
                 s_mock.sr2[s_mock.current_die] = tx_byte;
                 s_mock.cmd_byte_index++;
             }
@@ -219,12 +205,10 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
         case F_CMD_QUAD_PAGE_PROGRAM:  /* 32h */
         case F_CMD_PAGE_PROGRAM_4B:    /* 12h */
         case F_CMD_QUAD_PAGE_PROGRAM_4B: /* 34h */
-            if (s_mock.cmd_byte_index == 1U)
-            {
+            if (s_mock.cmd_byte_index == 1U) {
                 s_mock.page_program_count++;
             }
-            if (s_mock.cmd_byte_index >= 4U)
-            {
+            if (s_mock.cmd_byte_index >= 4U) {
                 s_mock.total_bytes_programmed++;
             }
             s_mock.cmd_byte_index++;
@@ -256,8 +240,7 @@ static void Test_TableLookup(void)
 
     assert(Flash_FindDevice(0x123456U) == NULL);
 
-    for (uint32_t i = 0U; i < FLASH_TABLE_ENTRIES_COUNT; i++)
-    {
+    for (uint32_t i = 0U; i < FLASH_TABLE_ENTRIES_COUNT; i++) {
         const FLASH_INFO *p_info = &g_flash_table[i];
         printf("  - Model [%u]: %-22s | JEDEC: 0x%06X | Size: %u KB | Addr: %uB\n",
                i, p_info->name, p_info->jedec_id, (p_info->flash_size / 1024U), p_info->addr_bytes);
@@ -330,8 +313,7 @@ static void Test_PageBoundarySplitting(void)
     int status = Flash_Init();
     assert(status == FLASH_OK);
 
-    for (uint32_t i = 0U; i < 300U; i++)
-    {
+    for (uint32_t i = 0U; i < 300U; i++) {
         write_buffer[i] = (uint8_t)(i & 0xFFU);
     }
 
@@ -549,25 +531,64 @@ static void Test_CRCAccumulate(void)
 {
     uint32_t aligned_buf[2048]; /* 8192 bytes */
 
-    printf("[TEST 11] G3: CRC is returned and accumulated across chunks...\n");
+    printf("[TEST 11] G3: CRC start/continue chaining + algorithm selection...\n");
 
+    /* --- Chaining: (start N1) + (continue N2) == (start N1+N2) --- */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF4019U;
     Mock_SetStatus(0x00U, 0x02U, 0x00U);
     int status = Flash_Init();
     assert(status == FLASH_OK);
 
-    /* Read 8192 bytes via SFC with CRC. SFC page = 4096 -> 2 chunks.
-     * The simulation folds each transferred length into the accumulator, so
-     * the exposed CRC equals the total transferred bytes (not discarded). */
-    status = Flash_Read(0x00001000U, aligned_buf, 2048U, FLASH_READ_QUAD_IO,
+    /* One-shot: 4096 bytes with CRC start. */
+    status = Flash_Read(0x00001000U, aligned_buf, 1024U, FLASH_READ_QUAD_IO,
                         FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC);
     assert(status == FLASH_OK);
+    const uint32_t crc_full = Flash_GetLastCRC();
 
-    const uint32_t crc = Flash_GetLastCRC();
-    printf("  - Flash_GetLastCRC() = %u (expected 8192).\n", crc);
-    assert(crc == 8192U);   /* 2 x 4096 accumulated across chunks */
-    printf("  - CRC accumulated across chunks and exposed. PASSED.\n\n");
+    /* Chained: 2048 (start) then 2048 (continue). */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    status = Flash_Init();
+    assert(status == FLASH_OK);
+    status = Flash_Read(0x00001000U, aligned_buf, 512U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC);
+    assert(status == FLASH_OK);
+    const uint32_t crc_first = Flash_GetLastCRC();
+    status = Flash_Read(0x00002000U, aligned_buf, 512U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC_CONT);
+    assert(status == FLASH_OK);
+    const uint32_t crc_chain = Flash_GetLastCRC();
+
+    printf("  - one-shot=%08X first=%08X chained=%08X\n", crc_full, crc_first, crc_chain);
+    assert(crc_full == crc_chain);      /* chaining == one-shot */
+    assert(crc_first != crc_chain);     /* continue extended the CRC */
+    printf("  - CRC chaining (start/continue) verified. ");
+
+    /* --- Algorithm selection changes the result --- */
+    g_flash_handle.crc_algo = FLASH_CRC_CHECKSUM;
+    status = Flash_Read(0x00001000U, aligned_buf, 1024U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC);
+    assert(status == FLASH_OK);
+    const uint32_t crc_sum = Flash_GetLastCRC();
+
+    g_flash_handle.crc_algo = FLASH_CRC32;
+    status = Flash_Read(0x00001000U, aligned_buf, 1024U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC);
+    assert(status == FLASH_OK);
+    const uint32_t crc_32 = Flash_GetLastCRC();
+
+    g_flash_handle.crc_algo = FLASH_CRC8;
+    status = Flash_Read(0x00001000U, aligned_buf, 1024U, FLASH_READ_QUAD_IO,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_CRC);
+    assert(status == FLASH_OK);
+    const uint32_t crc_8 = Flash_GetLastCRC();
+
+    printf("crc8=%08X crc32=%08X checksum=%08X\n", crc_8, crc_32, crc_sum);
+    assert(crc_32 != crc_sum);
+    assert(crc_8 != crc_32);
+    printf("  - Algorithm selection (crc8/crc32/checksum) verified. PASSED.\n\n");
 }
 
 static void Test_DirectSPIQuadGuard(void)

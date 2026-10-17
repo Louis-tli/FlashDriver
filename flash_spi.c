@@ -59,8 +59,7 @@ void Flash_SPI_SendCmd(uint8_t cmd)
 
 void Flash_SPI_SendAddr(uint32_t addr, uint8_t addr_bytes)
 {
-    if (addr_bytes == 4U)
-    {
+    if (addr_bytes == 4U) {
         Flash_SPI_TransferByte((uint8_t)((addr >> 24) & 0xFFU));
     }
     Flash_SPI_TransferByte((uint8_t)((addr >> 16) & 0xFFU));
@@ -70,16 +69,14 @@ void Flash_SPI_SendAddr(uint32_t addr, uint8_t addr_bytes)
 
 void Flash_SPI_ReadData(uint8_t *buf, uint32_t len)
 {
-    for (uint32_t i = 0U; i < len; i++)
-    {
+    for (uint32_t i = 0U; i < len; i++) {
         buf[i] = Flash_SPI_TransferByte(0xFFU);
     }
 }
 
 void Flash_SPI_WriteData(const uint8_t *buf, uint32_t len)
 {
-    for (uint32_t i = 0U; i < len; i++)
-    {
+    for (uint32_t i = 0U; i < len; i++) {
         (void)Flash_SPI_TransferByte(buf[i]);
     }
 }

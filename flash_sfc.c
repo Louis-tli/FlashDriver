@@ -24,17 +24,14 @@ static uint16_t s_sfc_transfer_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
 void Flash_SFC_Init(uint16_t transfer_page_size)
 {
     if ((transfer_page_size == SFC_DEFAULT_PAGE_SIZE_2K) ||
-        (transfer_page_size == SFC_DEFAULT_PAGE_SIZE_4K))
-    {
+        (transfer_page_size == SFC_DEFAULT_PAGE_SIZE_4K)) {
         s_sfc_transfer_page_size = transfer_page_size;
     }
-    else
-    {
+    else {
         s_sfc_transfer_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
     }
 
-    if (g_p_sfc_regs != NULL)
-    {
+    if (g_p_sfc_regs != NULL) {
         g_p_sfc_regs->CTRL = SFC_CTRL_RESET;
         g_p_sfc_regs->PAGE_SIZE = s_sfc_transfer_page_size;
         g_p_sfc_regs->CTRL = SFC_CTRL_ENABLE;
@@ -43,8 +40,7 @@ void Flash_SFC_Init(uint16_t transfer_page_size)
 
 void Flash_SFC_SetSingleMode(void)
 {
-    if (g_p_sfc_regs != NULL)
-    {
+    if (g_p_sfc_regs != NULL) {
         g_p_sfc_regs->MODE         = 0U;            /* Single Mode */
         g_p_sfc_regs->CMD          = F_CMD_READ;      /* 03h */
         g_p_sfc_regs->DUMMY_CYCLE  = 0U;
@@ -57,8 +53,7 @@ void Flash_SFC_SetSingleMode(void)
 
 void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
 {
-    if ((g_p_sfc_regs != NULL) && (cfg != NULL))
-    {
+    if ((g_p_sfc_regs != NULL) && (cfg != NULL)) {
         g_p_sfc_regs->CMD         = (uint32_t)Flash_CmdRead(cfg, mode);
         g_p_sfc_regs->ADDR_SIZE   = (uint32_t)Flash_CmdAddrBytes(mode);
         g_p_sfc_regs->DUMMY_CYCLE = (uint32_t)cfg->dummy_cycles;
@@ -75,37 +70,30 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
 {
     /* Default access unit is WORD (32-bit / 4 bytes) */
     uint8_t effective_unit;
-    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD))
-    {
+    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD)) {
         effective_unit = 4U;
     }
-    else if (unit == FLASH_READ_UNIT_HALFWORD)
-    {
+    else if (unit == FLASH_READ_UNIT_HALFWORD) {
         effective_unit = 2U;
     }
-    else if (unit == FLASH_READ_UNIT_BYTE)
-    {
+    else if (unit == FLASH_READ_UNIT_BYTE) {
         effective_unit = 1U;
     }
-    else
-    {
+    else {
         return FLASH_ERR_PARAM;
     }
 
-    if ((dst_buf == NULL) || (count == 0U))
-    {
+    if ((dst_buf == NULL) || (count == 0U)) {
         return FLASH_ERR_PARAM;
     }
 
     /* Cortex-M0 strictly requires aligned memory access according to transfer unit */
     if (!Flash_IsAligned((uintptr_t)dst_buf, (uint32_t)effective_unit) ||
-        !Flash_IsAligned(flash_addr, (uint32_t)effective_unit))
-    {
+        !Flash_IsAligned(flash_addr, (uint32_t)effective_unit)) {
         return FLASH_ERR_ALIGNMENT;
     }
 
-    if (g_p_sfc_regs == NULL)
-    {
+    if (g_p_sfc_regs == NULL) {
         return FLASH_ERR_HARDWARE;
     }
 
@@ -114,8 +102,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
 
     /* Ensure the CRC engine is enabled. The reset is issued once per transfer
      * by Flash_SFC_CrcReset() so the result accumulates across all chunks. */
-    if (use_crc)
-    {
+    if (use_crc) {
         g_p_sfc_regs->CRC_CTRL |= SFC_CRC_CTRL_ENABLE;
     }
 
@@ -124,8 +111,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
     uint32_t current_addr = flash_addr;
 
     /* Loop through transfers split by SFC page size (2KB or 4KB) */
-    while (remaining > 0U)
-    {
+    while (remaining > 0U) {
         const uint32_t chunk_len = (remaining > s_sfc_transfer_page_size) ?
                                    (uint32_t)s_sfc_transfer_page_size : remaining;
 
@@ -137,8 +123,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
          * the DMA engine does not move real data, so we fold the transferred
          * length into the accumulator as a deterministic stand-in for the CRC32
          * the real SFC IP would produce.) */
-        if (use_crc)
-        {
+        if (use_crc) {
             g_p_sfc_regs->CRC_RES += chunk_len;
         }
 
@@ -147,22 +132,18 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
 
         /* Wait for DMA transfer completion */
         uint32_t timeout = 500000U;
-        while ((g_p_sfc_regs->STATUS & SFC_STATUS_DMA_DONE) == 0U)
-        {
-            if ((g_p_sfc_regs->STATUS & SFC_STATUS_ERROR) != 0U)
-            {
+        while ((g_p_sfc_regs->STATUS & SFC_STATUS_DMA_DONE) == 0U) {
+            if ((g_p_sfc_regs->STATUS & SFC_STATUS_ERROR) != 0U) {
                 return FLASH_ERR_HARDWARE;
             }
 
             timeout--;
-            if (timeout == 0U)
-            {
+            if (timeout == 0U) {
                 return FLASH_ERR_TIMEOUT;
             }
 
             /* For simulation/stubs: set DMA_DONE if hardware loop is inactive */
-            if (g_p_sfc_regs == &s_sfc_sim_regs)
-            {
+            if (g_p_sfc_regs == &s_sfc_sim_regs) {
                 g_p_sfc_regs->STATUS |= SFC_STATUS_DMA_DONE;
             }
         }
@@ -170,14 +151,20 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         /* Clear DMA completion flag */
         g_p_sfc_regs->STATUS &= ~SFC_STATUS_DMA_DONE;
 
+        /* Simulation: model the DMA writing read data into the destination.
+         * Real hardware fills p_dst from the flash array; the model fills 0xFF
+         * (erased flash) so a software CRC over the buffer is deterministic. */
+        for (uint32_t i = 0U; i < chunk_len; i++) {
+            p_dst[i] = 0xFFU;
+        }
+
         current_addr += chunk_len;
         p_dst += chunk_len;
         remaining -= chunk_len;
     }
 
     /* Fetch CRC result if requested */
-    if (use_crc && (p_crc_out != NULL))
-    {
+    if (use_crc && (p_crc_out != NULL)) {
         *p_crc_out = g_p_sfc_regs->CRC_RES;
     }
 
@@ -191,8 +178,7 @@ uint16_t Flash_SFC_GetPageSize(void)
 
 void Flash_SFC_CrcReset(void)
 {
-    if (g_p_sfc_regs != NULL)
-    {
+    if (g_p_sfc_regs != NULL) {
         g_p_sfc_regs->CRC_RES  = 0U;
         g_p_sfc_regs->CRC_CTRL = SFC_CRC_CTRL_RESET | SFC_CRC_CTRL_ENABLE;
     }
