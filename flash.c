@@ -222,6 +222,36 @@ int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
 }
 
 /******************************************************************************
+ * Helper (SW-018): data-path gate.
+ *
+ * Read / Write / Erase / Protect are only allowed while the driver is READY.
+ *
+ * Why "info != NULL" alone is not enough: if a device that used to answer goes
+ * away, a re-init sets NO_CONNECT, but the handle still points at the model it
+ * found earlier. Without this check the driver would happily shift command and
+ * address bytes onto a dead bus and return whatever floats in (0xFF), i.e. a
+ * silent garbage read instead of a clear error.
+ *
+ * The probe/bring-up helpers (Flash_BasicRead, Flash_Reset, status polling)
+ * deliberately do NOT use this gate: they must work before the driver is READY.
+ ******************************************************************************/
+static int Flash_EnsureReady(void)
+{
+    /* Plain if-chain on purpose: a switch here made the compiler emit a
+     * 12-byte jump table in .rodata, which is silly for four values. */
+    if (g_flash_handle.state == FLASH_STATE_READY) {
+        return FLASH_OK;
+    }
+    if (g_flash_handle.state == FLASH_STATE_NO_CONNECT) {
+        return FLASH_ERR_NO_CONNECT;
+    }
+    if (g_flash_handle.state == FLASH_STATE_ERROR) {
+        return FLASH_ERR_HARDWARE;
+    }
+    return FLASH_ERR_PARAM;      /* UNINIT: driver was never initialised */
+}
+
+/******************************************************************************
  * Helper (SW-017): common bring-up + identification sequence.
  *
  * Flash_BootInitOpt() and Flash_InitOpt() used to carry their own copy of this
@@ -619,6 +649,12 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
  ******************************************************************************/
 static int Flash_WriteBlockProtect(uint8_t bp_mask)
 {
+    /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
+    const int ready = Flash_EnsureReady();
+    if (ready != FLASH_OK) {
+        return ready;
+    }
+
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
         return FLASH_ERR_PARAM;
@@ -792,11 +828,17 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
                FLASH_READ_MODE mode, FLASH_READ_UNIT unit,
                uint32_t options)
 {
+    /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
+    int status = Flash_EnsureReady();
+    if (status != FLASH_OK) {
+        return status;
+    }
+
     /* Unit resolution + NULL/count checks + overflow guard + Cortex-M0 alignment
      * now live in one shared helper (SW-016) used by both the SPI and SFC paths. */
     uint32_t effective_unit = 0U;
     uint32_t total_bytes = 0U;
-    int status = Flash_XferResolve(unit, count, buf, addr, &effective_unit, &total_bytes);
+    status = Flash_XferResolve(unit, count, buf, addr, &effective_unit, &total_bytes);
     if (status != FLASH_OK) {
         return status;
     }
@@ -895,6 +937,12 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
                 FLASH_PROGRAM_MODE mode)
 {
+    /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
+    const int ready = Flash_EnsureReady();
+    if (ready != FLASH_OK) {
+        return ready;
+    }
+
     if ((buf == NULL) || (len == 0U)) {
         return FLASH_ERR_PARAM;
     }
@@ -981,6 +1029,12 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
  ******************************************************************************/
 int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
 {
+    /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
+    const int ready = Flash_EnsureReady();
+    if (ready != FLASH_OK) {
+        return ready;
+    }
+
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
         return FLASH_ERR_PARAM;

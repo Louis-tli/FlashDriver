@@ -54,7 +54,7 @@ void app_start(void)
 - **SFC 안전 Read 시퀀스 내장**:
   - Quad I/O Read 전 `SFC Single 모드 설정` ➔ `SPI Status BUSY=0 폴링 완료` ➔ `SFC Quad I/O 모드 재설정` ➔ `DMA 전송` 시퀀스 자동화.
 - **작은 ROM 풋프린트 (SW-017 실측)**:
-  - `-Oz` 전체 드라이버 **5.2 KB**, easy API만 쓸 때(`--gc-sections`) 4.9 KB, `-flto`까지 쓰면 **3.4 KB**.
+  - `-Oz` 전체 드라이버 **5.3 KB**, easy API만 쓸 때(`--gc-sections`) 5.0 KB, `-flto`까지 쓰면 **3.6 KB**.
   - 모델명 문자열 제거 + 중복 경로 통합(Boot/Init·Protect/Unprotect·칩 소거)으로 감축. 나눗셈은 가독성을 위해 그대로 사용합니다(프로젝트의 다른 코드가 이미 libgcc 나눗셈기를 링크).
   - 모델 정보는 ROM(`.rodata`) 상주, SRAM은 가벼운 핸들 1개만 사용. 동적 메모리 할당(`malloc`) 완전 배제.
 - **다양한 읽기 단위 지원 (Read Access Units - Byte / Halfword / Word)**:
@@ -103,7 +103,7 @@ void app_start(void)
 ├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
 ├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
 ├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (25 suites)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (26 suites)
 ```
 
 ---
@@ -123,7 +123,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (25 suites):
+### 테스트 통과 항목 (26 suites):
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -149,6 +149,23 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 23. **VSR WREN 50h WEL-Free (SW-013 WEL)**: 50h는 WEL을 올리지 않음(데이터시트 준수) — WEL=0 상태의 휘발성 WRSR 성공 + 명령 삽입 시 50h 무효화 규칙
 24. **Per-Model Dummy Config (SW-013 DUMMY)**: 7종 모델별 dummy_last/dummy_value 검증 — Winbond 0xFF(Fxh), MX/GD 0x00, mode_byte 0x00
 25. **Buffered One-Frame Transfer (SW-016)**: 읽기 1프레임(tx_len=cmd+addr+dummy, rx_len=데이터), Fast Read 더미 헤더 포함, 페이지 프로그램 데이터 페이즈 동일 프레임, SPI/SFC 공용 지오메트리(정렬·오버플로) 일치, 실하드웨어 SFC 경로에서 DMA 버퍼/CRC_RES 무변경
+26. **NO_CONNECT Data-Path Gate (SW-018)**: 동작하던 칩이 사라진 뒤 재초기화로 NO_CONNECT가 되면 Read/Write/Erase/Protect가 모두 `FLASH_ERR_NO_CONNECT`로 거부되고 **SPI 프레임 0개** (버스에 아무것도 나가지 않음)
+
+---
+
+## 🛡 상태 게이트 (SW-018)
+
+`Flash_Read` / `Flash_Write` / `Flash_Erase` / `Flash_Protect` / `Flash_Unprotect`는 **`FLASH_STATE_READY`일 때만** 버스를 건드립니다.
+
+| 상태 | 반환 | 의미 |
+|------|------|------|
+| `READY` | 정상 수행 | 초기화 완료 |
+| `NO_CONNECT` | `FLASH_ERR_NO_CONNECT` | 칩 무응답 (재초기화로 판별) |
+| `ERROR` | `FLASH_ERR_HARDWARE` | ID 불일치·설정 오류 등 |
+| `UNINIT` | `FLASH_ERR_PARAM` | 초기화 미수행 |
+
+> `info != NULL`만 검사하면 **부족합니다**: 한 번 초기화에 성공한 뒤 칩이 사라지면 핸들에는 이전 모델이 남아 있어, 예전 코드는 죽은 버스로 명령을 내보내고 0xFF를 정상 데이터처럼 돌려줬습니다. 이제는 상태를 먼저 확인하고 즉시 거부합니다.
+> 저수준 함수(`Flash_BasicRead`, `Flash_Reset`, 상태 폴링)는 초기화 과정에서도 필요하므로 게이트를 적용하지 않습니다.
 
 ---
 
@@ -169,10 +186,10 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 
 | 빌드 | 이전 | 이후 |
 |------|------|------|
-| 전체 함수 유지 (`-Os`) | 5,860 B | **5,548 B** |
-| 전체 함수 유지 (`-Oz`) | 5,558 B | **5,202 B** |
-| easy API만 + `--gc-sections` (`-Oz`) | 5,074 B | **4,862 B** |
-| 위 + `-flto` | — | **3,428 B** |
+| 전체 함수 유지 (`-Os`) | 5,860 B | **5,612 B** |
+| 전체 함수 유지 (`-Oz`) | 5,558 B | **5,294 B** |
+| easy API만 + `--gc-sections` (`-Oz`) | 5,074 B | **4,954 B** |
+| 위 + `-flto` | — | **3,616 B** |
 
 크기 우선 빌드:
 

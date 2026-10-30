@@ -1210,6 +1210,43 @@ static void Test_BufferedXferAndSharedGeometry(void)
     printf("  - Real-HW SFC path: DMA buffer and CRC_RES untouched by software. PASSED.\n\n");
 }
 
+static void Test_NoConnectRefusesDataPath(void)
+{
+    uint8_t buf[16];
+
+    printf("[TEST 26] NO_CONNECT: data path refuses and issues no SPI frames...\n");
+
+    /* 1. A working device fills the handle */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+
+    /* 2. The device disappears; re-init detects it and enters NO_CONNECT.
+     *    The handle still holds the previous model, which is exactly why the
+     *    data path must look at the driver state, not only at info != NULL. */
+    s_mock.mock_jedec_id = 0x000000U;
+    assert(Flash_Init() == FLASH_ERR_NO_CONNECT);
+    assert(Flash_GetState() == FLASH_STATE_NO_CONNECT);
+
+    /* 3. Nothing may reach the bus from here on */
+    memset(&s_xfer, 0, sizeof(s_xfer));
+    memset(buf, 0x00, sizeof(buf));
+
+    assert(Flash_Read(0x00001000U, buf, 4U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_WORD, 0U) == FLASH_ERR_NO_CONNECT);
+    assert(Flash_Write(0x00001000U, buf, sizeof(buf),
+                       FLASH_PROGRAM_SINGLE) == FLASH_ERR_NO_CONNECT);
+    assert(Flash_Erase(0x00001000U, FLASH_ERASE_SECTOR) == FLASH_ERR_NO_CONNECT);
+    assert(Flash_Protect(0x0FU) == FLASH_ERR_NO_CONNECT);
+    assert(Flash_Unprotect() == FLASH_ERR_NO_CONNECT);
+
+    assert(s_xfer.frames == 0U);          /* no SPI transaction was started */
+
+    printf("  - Read/Write/Erase/Protect refused, %u SPI frames. PASSED.\n\n",
+           s_xfer.frames);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1243,9 +1280,10 @@ int main(void)
     Test_VsrWrenNoWel();
     Test_DummyCfgPerModel();
     Test_BufferedXferAndSharedGeometry();
+    Test_NoConnectRefusesDataPath();
 
     printf("================================================================\n");
-    printf(" ALL 25 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 26 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;
