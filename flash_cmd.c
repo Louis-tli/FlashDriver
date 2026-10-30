@@ -52,6 +52,44 @@ uint8_t Flash_CmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode
 }
 
 /******************************************************************************
+ * Command header builder (SW-016): opcode -> address -> dummy in one buffer.
+ ******************************************************************************/
+uint32_t Flash_CmdBuildHeader(uint8_t *buf, uint8_t cmd, uint32_t addr,
+                              uint8_t addr_bytes, const FLASH_READ_CFG *read_cfg)
+{
+    if (buf == NULL) {
+        return 0U;
+    }
+    if ((addr_bytes != 0U) && (addr_bytes != 3U) && (addr_bytes != 4U)) {
+        return 0U;
+    }
+
+    uint32_t n = 0U;
+    buf[n++] = cmd;
+
+    if (addr_bytes != 0U) {
+        if (addr_bytes == 4U) {
+            buf[n++] = (uint8_t)((addr >> 24) & 0xFFU);
+        }
+        buf[n++] = (uint8_t)((addr >> 16) & 0xFFU);
+        buf[n++] = (uint8_t)((addr >> 8) & 0xFFU);
+        buf[n++] = (uint8_t)(addr & 0xFFU);
+    }
+
+    /* Dummy bytes: DUMMY_LAST first (M7-M0 slot), then DUMMY_VAL for the rest. */
+    if (read_cfg != NULL) {
+        for (uint32_t i = 0U; i < (uint32_t)read_cfg->dummy_bytes; i++) {
+            if (n >= FLASH_CMD_HDR_MAX) {
+                return 0U;
+            }
+            buf[n++] = (i == 0U) ? read_cfg->dummy_last : read_cfg->dummy_value;
+        }
+    }
+
+    return n;
+}
+
+/******************************************************************************
  * Erase opcode: standard 3-Byte / 4-Byte variants (chip erase has no address).
  ******************************************************************************/
 uint8_t Flash_CmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode)

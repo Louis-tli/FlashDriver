@@ -15,6 +15,7 @@
 #include "flash_cmd.h"
 #include "flash_crc.h"
 #include "flash_delay.h"
+#include "flash_xfer.h"
 
 /******************************************************************************
  * Global Runtime Handle Instance (Allocated in SRAM)
@@ -30,6 +31,65 @@ FLASH_HANDLE g_flash_handle =
     .locked        = false,
     .last_crc      = 0U
 };
+
+/******************************************************************************
+ * Helpers: one-frame SPI transfers (SW-016)
+ *
+ *   The opcode, address and dummy bytes are packed into one small header buffer
+ *   and the whole operation is handed to Flash_SPI_Transact() as a single /CS
+ *   frame (tx_len / data phase / rx_len), instead of poking SPI bytes one at a
+ *   time from every call site.
+ ******************************************************************************/
+static int Flash_SpiReadFrame(uint8_t cmd, uint32_t addr, uint8_t addr_bytes,
+                              const FLASH_READ_CFG *read_cfg,
+                              uint8_t *rx_buf, uint32_t rx_len)
+{
+    uint8_t hdr[FLASH_CMD_HDR_MAX];
+    const uint32_t hdr_len = Flash_CmdBuildHeader(hdr, cmd, addr, addr_bytes, read_cfg);
+    if (hdr_len == 0U) {
+        return FLASH_ERR_PARAM;
+    }
+
+    const FLASH_SPI_XFER xfer = {
+        .tx_buf = hdr, .tx_len = hdr_len,
+        .rx_buf = rx_buf, .rx_len = rx_len
+    };
+    Flash_SPI_Transact(&xfer);
+    return FLASH_OK;
+}
+
+static int Flash_SpiWriteFrame(uint8_t cmd, uint32_t addr, uint8_t addr_bytes,
+                               const uint8_t *data, uint32_t data_len, bool quad)
+{
+    uint8_t hdr[FLASH_CMD_HDR_MAX];
+    const uint32_t hdr_len = Flash_CmdBuildHeader(hdr, cmd, addr, addr_bytes, NULL);
+    if (hdr_len == 0U) {
+        return FLASH_ERR_PARAM;
+    }
+
+    FLASH_SPI_XFER xfer = { .tx_buf = hdr, .tx_len = hdr_len };
+    if ((data != NULL) && (data_len > 0U)) {
+        if (quad) {
+            xfer.quad_buf = data;
+            xfer.quad_len = data_len;
+        }
+        else {
+            xfer.data_buf = data;
+            xfer.data_len = data_len;
+        }
+    }
+    Flash_SPI_Transact(&xfer);
+    return FLASH_OK;
+}
+
+/******************************************************************************
+ * Helper: raw command frame with an arbitrary opcode + payload (no address).
+ ******************************************************************************/
+static void Flash_SpiRawFrame(const uint8_t *bytes, uint32_t len)
+{
+    const FLASH_SPI_XFER xfer = { .tx_buf = bytes, .tx_len = len };
+    Flash_SPI_Transact(&xfer);
+}
 
 /******************************************************************************
  * Helper: Resolve Multi-Die Address & Die Index (W25M512)
@@ -155,14 +215,9 @@ int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
         return FLASH_ERR_PARAM;
     }
 
-    /* 03h + 3-byte address works on every supported device in low memory. */
-    Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(F_CMD_READ);
-    Flash_SPI_SendAddr(addr, 3U);
-    Flash_SPI_ReadData((uint8_t *)buf, len);
-    Flash_SPI_CS_High();
-
-    return FLASH_OK;
+    /* 03h + 3-byte address works on every supported device in low memory.
+     * One frame: header out, data in. */
+    return Flash_SpiReadFrame(F_CMD_READ, addr, 3U, NULL, (uint8_t *)buf, len);
 }
 
 /******************************************************************************
@@ -366,10 +421,10 @@ int Flash_ReadJEDECID(uint32_t *p_jedec_id)
         return FLASH_ERR_PARAM;
     }
 
-    Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(F_CMD_RDID);
-    Flash_SPI_ReadData(id_buf, 3U);
-    Flash_SPI_CS_High();
+    const int status = Flash_SpiReadFrame(F_CMD_RDID, 0U, 0U, NULL, id_buf, 3U);
+    if (status != FLASH_OK) {
+        return status;
+    }
 
     *p_jedec_id = ((uint32_t)id_buf[0] << 16) |
                   ((uint32_t)id_buf[1] << 8)  |
@@ -403,12 +458,8 @@ int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val)
             return FLASH_ERR_PARAM;
     }
 
-    Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(cmd);
-    *p_val = Flash_SPI_TransferByte(0xFFU);
-    Flash_SPI_CS_High();
-
-    return FLASH_OK;
+    /* Status read: one-byte opcode in, one register value out, one CS frame. */
+    return Flash_SpiReadFrame(cmd, 0U, 0U, NULL, p_val, 1U);
 }
 
 /******************************************************************************
@@ -511,11 +562,8 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
             return status;
         }
 
-        Flash_SPI_CS_Low();
-        (void)Flash_SPI_TransferByte(F_CMD_WRSR1);
-        (void)Flash_SPI_TransferByte(sr1);
-        (void)Flash_SPI_TransferByte(val); /* SR2 */
-        Flash_SPI_CS_High();
+        const uint8_t frame[3] = { F_CMD_WRSR1, sr1, val };  /* SR1 + SR2 in one frame */
+        Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
 
         return Flash_WaitBusy(200000U);
     }
@@ -526,24 +574,22 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
         return status;
     }
 
-    Flash_SPI_CS_Low();
+    uint8_t cmd;
     if (reg_idx == 1U) {
-        (void)Flash_SPI_TransferByte(F_CMD_WRSR1);
-        (void)Flash_SPI_TransferByte(val);
+        cmd = F_CMD_WRSR1;
     }
     else if (reg_idx == 2U) {
-        (void)Flash_SPI_TransferByte(F_CMD_WRSR2);
-        (void)Flash_SPI_TransferByte(val);
+        cmd = F_CMD_WRSR2;
     }
     else if (reg_idx == 3U) {
-        (void)Flash_SPI_TransferByte(F_CMD_WRSR3);
-        (void)Flash_SPI_TransferByte(val);
+        cmd = F_CMD_WRSR3;
     }
     else {
-        Flash_SPI_CS_High();
         return FLASH_ERR_PARAM;
     }
-    Flash_SPI_CS_High();
+
+    const uint8_t frame[2] = { cmd, val };   /* opcode + value, one CS frame */
+    Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
 
     return Flash_WaitBusy(200000U);
 }
@@ -670,11 +716,9 @@ int Flash_SelectDie(uint8_t die_idx)
         return FLASH_OK;
     }
 
-    /* Winbond Software Die Select (C2h + die_id) */
-    Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(F_CMD_WINBOND_DIE_SELECT);
-    (void)Flash_SPI_TransferByte(die_idx);
-    Flash_SPI_CS_High();
+    /* Winbond Software Die Select (C2h + die_id) — one CS frame */
+    const uint8_t frame[2] = { F_CMD_WINBOND_DIE_SELECT, die_idx };
+    Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
 
     Flash_DelayUs(50U);         /* die-select settle (SW-014: was 500 loops) */
     g_flash_handle.current_die = die_idx;
@@ -718,24 +762,14 @@ static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chu
         return status;
     }
 
-    Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(Flash_CmdRead(read_cfg, g_flash_handle.addr_mode));
-    Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
-
-    /* SW-013 DUMMY (owner-confirmed TCON wire order):
+    /* SW-013 DUMMY (owner-confirmed TCON wire order) is built into the header:
      * CMD -> ADDR -> DUMMY_LAST (FIRST dummy byte = M7-M0 mode byte slot)
-     *      -> DUMMY_VAL -> ... -> DATA */
-    if (read_cfg->dummy_bytes > 0U) {
-        (void)Flash_SPI_TransferByte(read_cfg->dummy_last);
-        for (uint32_t i = 1U; i < read_cfg->dummy_bytes; i++) {
-            (void)Flash_SPI_TransferByte(read_cfg->dummy_value);
-        }
-    }
-
-    Flash_SPI_ReadData(p_buf, chunk_len);
-    Flash_SPI_CS_High();
-
-    return FLASH_OK;
+     *      -> DUMMY_VAL -> ... -> DATA
+     * SW-016: header and data travel in ONE frame (tx_len + rx_len). */
+    return Flash_SpiReadFrame(Flash_CmdRead(read_cfg, g_flash_handle.addr_mode),
+                              die_addr,
+                              Flash_CmdAddrBytes(g_flash_handle.addr_mode),
+                              read_cfg, p_buf, chunk_len);
 }
 
 /******************************************************************************
@@ -745,29 +779,17 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
                FLASH_READ_MODE mode, FLASH_READ_UNIT unit,
                uint32_t options)
 {
-    /* Unit Resolution: default (0) or WORD (4) -> 4 bytes, HALFWORD (2) -> 2 bytes, BYTE (1) -> 1 byte */
-    uint8_t effective_unit;
-    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD)) {
-        effective_unit = 4U;
-    }
-    else if (unit == FLASH_READ_UNIT_HALFWORD) {
-        effective_unit = 2U;
-    }
-    else if (unit == FLASH_READ_UNIT_BYTE) {
-        effective_unit = 1U;
-    }
-    else {
-        return FLASH_ERR_PARAM;
+    /* Unit resolution + NULL/count checks + overflow guard + Cortex-M0 alignment
+     * now live in one shared helper (SW-016) used by both the SPI and SFC paths. */
+    uint32_t effective_unit = 0U;
+    uint32_t total_bytes = 0U;
+    int status = Flash_XferResolve(unit, count, buf, addr, &effective_unit, &total_bytes);
+    if (status != FLASH_OK) {
+        return status;
     }
 
-    if ((buf == NULL) || (count == 0U) || (mode >= FLASH_READ_MODE_MAX)) {
+    if (mode >= FLASH_READ_MODE_MAX) {
         return FLASH_ERR_PARAM;
-    }
-
-    /* Cortex-M0 Alignment check based on effective unit */
-    if (!Flash_IsAligned((uintptr_t)buf, (uint32_t)effective_unit) ||
-        !Flash_IsAligned(addr, (uint32_t)effective_unit)) {
-        return FLASH_ERR_ALIGNMENT;
     }
 
     const FLASH_INFO *info = g_flash_handle.info;
@@ -775,7 +797,6 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         return FLASH_ERR_PARAM;
     }
 
-    const uint32_t total_bytes = count * (uint32_t)effective_unit;
     const FLASH_READ_CFG *read_cfg = &info->read_cfg[mode];
     uint8_t *p_buf = (uint8_t *)buf;
     uint32_t remaining = total_bytes;
@@ -798,7 +819,7 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
     while (remaining > 0U) {
         uint8_t target_die = 0U;
         uint32_t die_addr = 0U;
-        int status = Flash_ResolveDie(current_addr, &target_die, &die_addr);
+        status = Flash_ResolveDie(current_addr, &target_die, &die_addr);
         if (status != FLASH_OK) {
             return status;
         }
@@ -819,7 +840,7 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 
         /* Execute the transfer via the appropriate per-chunk read path */
         if ((options & FLASH_READ_OPT_SFC) != 0U) {
-            status = Flash_ReadChunkSFC(die_addr, p_buf, chunk_len, (uint32_t)effective_unit,
+            status = Flash_ReadChunkSFC(die_addr, p_buf, chunk_len, effective_unit,
                                         unit, read_cfg, false);
         }
         else {
@@ -911,18 +932,14 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
             return status;
         }
 
-        /* 3. Send Program Command + Address + Data */
-        Flash_SPI_CS_Low();
-        (void)Flash_SPI_TransferByte(prog_cmd);
-        Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
-
-        if (mode == FLASH_PROGRAM_QUAD) {
-            Flash_SPI_WriteQuadData(p_src, chunk_len);
+        /* 3. Send Program Command + Address + Data in ONE frame (SW-016) */
+        status = Flash_SpiWriteFrame(prog_cmd, die_addr,
+                                     Flash_CmdAddrBytes(g_flash_handle.addr_mode),
+                                     p_src, chunk_len,
+                                     (mode == FLASH_PROGRAM_QUAD));
+        if (status != FLASH_OK) {
+            return status;
         }
-        else {
-            Flash_SPI_WriteData(p_src, chunk_len);
-        }
-        Flash_SPI_CS_High();
 
         /* 4. Wait for Program cycle completion */
         status = Flash_WaitBusy(200000U);
@@ -1028,10 +1045,13 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return status;
     }
 
-    Flash_SPI_CS_Low();
-    (void)Flash_SPI_TransferByte(erase_cmd);
-    Flash_SPI_SendAddr(die_addr, Flash_CmdAddrBytes(g_flash_handle.addr_mode));
-    Flash_SPI_CS_High();
+    /* Opcode + address in one frame (SW-016); the erase itself is BUSY-polled. */
+    status = Flash_SpiWriteFrame(erase_cmd, die_addr,
+                                 Flash_CmdAddrBytes(g_flash_handle.addr_mode),
+                                 NULL, 0U, false);
+    if (status != FLASH_OK) {
+        return status;
+    }
 
     return Flash_WaitBusy(2000000U);
 }

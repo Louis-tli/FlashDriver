@@ -98,9 +98,11 @@ void app_start(void)
 ├── flash_crc.c      # CRC8 / CRC16 / CRC16-CCITT / CRC32 / CHECKSUM 구현
 ├── flash_sfc.h      # TCON SFC IP 하드웨어 레지스터 맵(ACCESS_UNIT 포함) 및 DMA API 헤더
 ├── flash_sfc.c      # TCON SFC IP 드라이버 구현 (Single/Quad 모드 전환, 단위별 2K/4K DMA Read)
-├── flash_spi.h      # Low-Level SPI 컨트롤러 인터페이스 헤더
-├── flash_spi.c      # Low-Level SPI 컨트롤러 드라이버 및 HW 추상화 스텁
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (20 suites)
+├── flash_spi.h      # Low-Level SPI 인터페이스 + 버퍼 전송(FLASH_SPI_XFER) 정의
+├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
+├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
+├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (25 suites)
 ```
 
 ---
@@ -111,7 +113,7 @@ GCC (MinGW / LLVM) 또는 ARM Compiler (ARMCC/ARMCLANG)를 통해 C99 표준으�
 
 ```bash
 # GCC 환경에서 C99 엄격 모드로 컴파일
-gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c flash_delay.c flash_easy.c test_flash.c -o test_flash.exe
+gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c flash_delay.c flash_easy.c flash_xfer.c test_flash.c -o test_flash.exe
 
 # 검증 테스트 실행
 ./test_flash.exe
@@ -120,7 +122,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (24 suites):
+### 테스트 통과 항목 (25 suites):
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -145,6 +147,43 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 22. **Time-based Delay (SW-014)**: µs→루프 환산(108/50MHz), 올림 처리, 무효 클록 가드
 23. **VSR WREN 50h WEL-Free (SW-013 WEL)**: 50h는 WEL을 올리지 않음(데이터시트 준수) — WEL=0 상태의 휘발성 WRSR 성공 + 명령 삽입 시 50h 무효화 규칙
 24. **Per-Model Dummy Config (SW-013 DUMMY)**: 7종 모델별 dummy_last/dummy_value 검증 — Winbond 0xFF(Fxh), MX/GD 0x00, mode_byte 0x00
+25. **Buffered One-Frame Transfer (SW-016)**: 읽기 1프레임(tx_len=cmd+addr+dummy, rx_len=데이터), Fast Read 더미 헤더 포함, 페이지 프로그램 데이터 페이즈 동일 프레임, SPI/SFC 공용 지오메트리(정렬·오버플로) 일치, 실하드웨어 SFC 경로에서 DMA 버퍼/CRC_RES 무변경
+
+---
+
+## 🔌 SPI 전송 방식 (SW-016)
+
+명령·주소·데이터를 바이트 단위로 각각 호출하지 않고, **한 번의 /CS 프레임**으로 묶어 전송합니다.
+`Flash_SPI_XFER`에 단계별 버퍼와 길이만 채워 `Flash_SPI_Transact()`에 넘기면 됩니다.
+
+```c
+uint8_t hdr[FLASH_CMD_HDR_MAX];
+const uint32_t hdr_len = Flash_CmdBuildHeader(hdr, F_CMD_READ, 0x1000U, 3U, NULL);
+
+const FLASH_SPI_XFER xfer = {
+    .tx_buf = hdr,  .tx_len = hdr_len,      /* 1단계: cmd + addr (+ dummy) */
+    .rx_buf = buf,  .rx_len = 256U          /* 4단계: 데이터 수신            */
+};
+Flash_SPI_Transact(&xfer);                  /* CS Low → TX → RX → CS High  */
+```
+
+| 단계 | 필드 | 용도 |
+|------|------|------|
+| 1 | `tx_buf` / `tx_len` | opcode + 주소 + 더미 (1라인) |
+| 2 | `data_buf` / `data_len` | Page Program 데이터 (1라인, 02h) |
+| 3 | `quad_buf` / `quad_len` | Quad Page Program 데이터 (4라인, 32h) |
+| 4 | `rx_buf` / `rx_len` | 읽기 데이터 수신 (1라인) |
+
+- 펌웨어 BSP는 `Flash_SPI_Transact()`만 재정의하면 됩니다(weak 기본 구현은 바이트 루프로 폴백).
+- 버퍼를 이어붙이거나 복사하지 않습니다 — 단계별 포인터를 그대로 레지스터에 넣습니다.
+- 읽기 단위 해석·정렬 검사·32bit 오버플로 가드는 `flash_xfer.c` 한 곳에서 처리하며, SPI 경로와 SFC 경로가 동일한 코드를 사용합니다.
+
+---
+
+## 🧪 시뮬레이션 / 실하드웨어 구분 (SW-015)
+
+`g_p_sfc_regs`가 내장 시뮬레이션 블록(`s_sfc_sim_regs`)을 가리킬 때만 시뮬레이션 동작(DMA_DONE 강제, 수신 버퍼 0xFF 채움, CRC 누산)이 실행됩니다.
+실제 SFC IP 레지스터를 지정하면 하드웨어가 DMA·CRC를 담당하고 소프트웨어는 레지스터 설정과 완료 대기만 수행합니다.
 
 ---
 

@@ -7,6 +7,7 @@
 
 #include "flash_sfc.h"
 #include "flash_cmd.h"
+#include "flash_xfer.h"
 
 /******************************************************************************
  * Global Pointer to SFC Register Map
@@ -68,37 +69,27 @@ void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
 int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
                       FLASH_READ_UNIT unit, bool use_crc, uint32_t *p_crc_out)
 {
-    /* Default access unit is WORD (32-bit / 4 bytes) */
-    uint8_t effective_unit;
-    if ((unit == FLASH_READ_UNIT_DEFAULT) || (unit == FLASH_READ_UNIT_WORD)) {
-        effective_unit = 4U;
-    }
-    else if (unit == FLASH_READ_UNIT_HALFWORD) {
-        effective_unit = 2U;
-    }
-    else if (unit == FLASH_READ_UNIT_BYTE) {
-        effective_unit = 1U;
-    }
-    else {
-        return FLASH_ERR_PARAM;
-    }
-
-    if ((dst_buf == NULL) || (count == 0U)) {
-        return FLASH_ERR_PARAM;
-    }
-
-    /* Cortex-M0 strictly requires aligned memory access according to transfer unit */
-    if (!Flash_IsAligned((uintptr_t)dst_buf, (uint32_t)effective_unit) ||
-        !Flash_IsAligned(flash_addr, (uint32_t)effective_unit)) {
-        return FLASH_ERR_ALIGNMENT;
+    /* Unit mapping (DEFAULT/WORD -> 4, HALFWORD -> 2, BYTE -> 1), NULL/count
+     * checks, 32-bit overflow guard and the Cortex-M0 alignment check all come
+     * from the shared helper (SW-016) — the SPI path uses the very same code. */
+    uint32_t unit_bytes = 0U;
+    uint32_t total_bytes = 0U;
+    int status = Flash_XferResolve(unit, count, dst_buf, flash_addr,
+                                   &unit_bytes, &total_bytes);
+    if (status != FLASH_OK) {
+        return status;
     }
 
     if (g_p_sfc_regs == NULL) {
         return FLASH_ERR_HARDWARE;
     }
 
-    const uint32_t total_bytes = count * (uint32_t)effective_unit;
-    g_p_sfc_regs->ACCESS_UNIT = (uint32_t)effective_unit;
+    /* Simulation register block = unit-test / bring-up with no SFC IP behind it.
+     * Everything simulation-only must be gated on this flag, otherwise it runs
+     * on real silicon and destroys the DMA result (SW-015). */
+    const bool is_sim = (g_p_sfc_regs == &s_sfc_sim_regs);
+
+    g_p_sfc_regs->ACCESS_UNIT = unit_bytes;
 
     /* Ensure the CRC engine is enabled. The reset is issued once per transfer
      * by Flash_SFC_CrcReset() so the result accumulates across all chunks. */
@@ -119,11 +110,10 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         g_p_sfc_regs->DMA_DST = (uint32_t)(uintptr_t)p_dst;
         g_p_sfc_regs->DMA_LEN = chunk_len;
 
-        /* Hardware CRC accumulates over the whole transfer. (In this simulation
-         * the DMA engine does not move real data, so we fold the transferred
-         * length into the accumulator as a deterministic stand-in for the CRC32
-         * the real SFC IP would produce.) */
-        if (use_crc) {
+        /* Hardware CRC accumulates over the whole transfer by itself. Only the
+         * simulation folds the length into the accumulator; on real silicon the
+         * SFC IP owns CRC_RES and a software add would corrupt the result. */
+        if (use_crc && is_sim) {
             g_p_sfc_regs->CRC_RES += chunk_len;
         }
 
@@ -142,8 +132,8 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
                 return FLASH_ERR_TIMEOUT;
             }
 
-            /* For simulation/stubs: set DMA_DONE if hardware loop is inactive */
-            if (g_p_sfc_regs == &s_sfc_sim_regs) {
+            /* Simulation only: no DMA engine exists to raise DMA_DONE. */
+            if (is_sim) {
                 g_p_sfc_regs->STATUS |= SFC_STATUS_DMA_DONE;
             }
         }
@@ -151,11 +141,13 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         /* Clear DMA completion flag */
         g_p_sfc_regs->STATUS &= ~SFC_STATUS_DMA_DONE;
 
-        /* Simulation: model the DMA writing read data into the destination.
-         * Real hardware fills p_dst from the flash array; the model fills 0xFF
-         * (erased flash) so a software CRC over the buffer is deterministic. */
-        for (uint32_t i = 0U; i < chunk_len; i++) {
-            p_dst[i] = 0xFFU;
+        /* Simulation only: model the DMA writing read data into the destination.
+         * On real hardware the SFC IP already filled p_dst from the flash array,
+         * so touching it here would overwrite every byte with 0xFF (SW-015). */
+        if (is_sim) {
+            for (uint32_t i = 0U; i < chunk_len; i++) {
+                p_dst[i] = 0xFFU;
+            }
         }
 
         current_addr += chunk_len;

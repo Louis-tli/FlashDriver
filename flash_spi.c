@@ -50,11 +50,60 @@ __WEAK uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
     return 0xFFU;
 }
 
+/******************************************************************************
+ * Buffered transfer engine (SW-016)
+ *
+ * Target BSP replacement (one register kick, no per-byte polling):
+ *   SPI->TX_LEN   = xfer->tx_len;
+ *   SPI->DATA_LEN = xfer->data_len;
+ *   SPI->QUAD_LEN = xfer->quad_len;
+ *   SPI->RX_LEN   = xfer->rx_len;
+ *   SPI->TX_ADDR  = (uint32_t)xfer->tx_buf;
+ *   SPI->DATA_ADDR= (uint32_t)xfer->data_buf;
+ *   SPI->QUAD_ADDR= (uint32_t)xfer->quad_buf;
+ *   SPI->RX_ADDR  = (uint32_t)xfer->rx_buf;
+ *   SPI->CTRL    |= SPI_CTRL_START;        // CS auto-asserted/released by HW
+ *   while ((SPI->STATUS & SPI_STATUS_DONE) == 0U) { ... }
+ ******************************************************************************/
+__WEAK void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
+{
+    if (xfer == NULL) {
+        return;
+    }
+
+    Flash_SPI_CS_Low();
+
+    /* Phase 1: command + address + dummy (1 data line) */
+    if ((xfer->tx_buf != NULL) && (xfer->tx_len > 0U)) {
+        for (uint32_t i = 0U; i < xfer->tx_len; i++) {
+            (void)Flash_SPI_TransferByte(xfer->tx_buf[i]);
+        }
+    }
+
+    /* Phase 2: 1-bit data payload (Page Program 02h) */
+    if ((xfer->data_buf != NULL) && (xfer->data_len > 0U)) {
+        Flash_SPI_WriteData(xfer->data_buf, xfer->data_len);
+    }
+
+    /* Phase 3: 4-bit data payload (Quad Page Program 32h) */
+    if ((xfer->quad_buf != NULL) && (xfer->quad_len > 0U)) {
+        Flash_SPI_WriteQuadData(xfer->quad_buf, xfer->quad_len);
+    }
+
+    /* Phase 4: read data back (1 data line) */
+    if ((xfer->rx_buf != NULL) && (xfer->rx_len > 0U)) {
+        for (uint32_t i = 0U; i < xfer->rx_len; i++) {
+            xfer->rx_buf[i] = Flash_SPI_TransferByte(0xFFU);
+        }
+    }
+
+    Flash_SPI_CS_High();
+}
+
 void Flash_SPI_SendCmd(uint8_t cmd)
 {
-    Flash_SPI_CS_Low();
-    Flash_SPI_TransferByte(cmd);
-    Flash_SPI_CS_High();
+    const FLASH_SPI_XFER xfer = { .tx_buf = &cmd, .tx_len = 1U };
+    Flash_SPI_Transact(&xfer);
 }
 
 void Flash_SPI_SendAddr(uint32_t addr, uint8_t addr_bytes)

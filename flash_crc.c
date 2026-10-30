@@ -17,6 +17,7 @@ uint32_t Flash_CrcInit(FLASH_CRC_ALGO algo)
         case FLASH_CRC16_CCITT:  return 0x0000FFFFU;
         case FLASH_CRC32:        return 0xFFFFFFFFU;
         case FLASH_CRC_CHECKSUM: return 0x00000000U;
+        case FLASH_CRC_ALGO_MAX: return 0x00000000U;   /* invalid: neutral seed */
         default:                 return 0x00000000U;
     }
 }
@@ -63,6 +64,7 @@ uint32_t Flash_CrcUpdate(FLASH_CRC_ALGO algo, uint32_t crc, const uint8_t *data,
                 break;
 
             case FLASH_CRC_CHECKSUM:
+            case FLASH_CRC_ALGO_MAX:    /* invalid: fall back to checksum */
             default:
                 crc = (crc + (uint32_t)b) & 0xFFU;
                 break;

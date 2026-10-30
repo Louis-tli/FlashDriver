@@ -56,11 +56,30 @@ typedef struct
 
 static MOCK_SPI_STATE s_mock;
 
+/* SW-016: geometry of the most recent Flash_SPI_Transact() frame, so the tests
+ * can prove that command/address/data travel as ONE buffered transaction. */
+typedef struct
+{
+    uint32_t frames;            /* Flash_SPI_Transact() calls since reset       */
+    uint32_t last_tx_len;       /* header (cmd + address + dummy) length       */
+    uint32_t last_data_len;     /* 1-bit payload length                         */
+    uint32_t last_quad_len;     /* 4-bit payload length                         */
+    uint32_t last_rx_len;       /* read length                                  */
+    uint8_t  last_first_tx;     /* first header byte (opcode)                   */
+    uint32_t last_payload_len;  /* last non-zero data/quad payload length       */
+    uint32_t last_payload_tx_len; /* header length of the frame carrying payload */
+    uint32_t last_data_payload_len; /* last 1-bit payload length               */
+    uint32_t last_quad_payload_len; /* last 4-bit payload length               */
+} MOCK_XFER_LOG;
+
+static MOCK_XFER_LOG s_xfer;
+
 /* Reset mock to a clean state (both dies). Also clear the driver handle so
  * each test starts from a fresh, unlocked driver. */
 static void Mock_Reset(void)
 {
     memset(&s_mock, 0, sizeof(s_mock));
+    memset(&s_xfer, 0, sizeof(s_xfer));
     s_mock.last_die_selected = 0xFFU;
 
     g_flash_handle.info          = NULL;
@@ -254,6 +273,56 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
     }
 
     return rx_byte;
+}
+
+/* SW-016: instrumented stand-in for the target BSP's buffered transfer.
+ * Records the requested phase geometry, then replays the bytes through the
+ * byte-level mock so the emulated device still sees the same wire order. */
+void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
+{
+    s_xfer.frames++;
+    s_xfer.last_tx_len   = xfer->tx_len;
+    s_xfer.last_data_len = xfer->data_len;
+    s_xfer.last_quad_len = xfer->quad_len;
+    s_xfer.last_rx_len   = xfer->rx_len;
+    s_xfer.last_first_tx = ((xfer->tx_buf != NULL) && (xfer->tx_len > 0U))
+                           ? xfer->tx_buf[0] : 0U;
+    if (xfer->quad_len > 0U) {
+        s_xfer.last_payload_len = xfer->quad_len;
+        s_xfer.last_payload_tx_len = xfer->tx_len;
+        s_xfer.last_quad_payload_len = xfer->quad_len;
+    }
+    else if (xfer->data_len > 0U) {
+        s_xfer.last_payload_len = xfer->data_len;
+        s_xfer.last_payload_tx_len = xfer->tx_len;
+        s_xfer.last_data_payload_len = xfer->data_len;
+    }
+
+    Flash_SPI_CS_Low();
+
+    if (xfer->tx_buf != NULL) {
+        for (uint32_t i = 0U; i < xfer->tx_len; i++) {
+            (void)Flash_SPI_TransferByte(xfer->tx_buf[i]);
+        }
+    }
+    if (xfer->data_buf != NULL) {
+        for (uint32_t i = 0U; i < xfer->data_len; i++) {
+            (void)Flash_SPI_TransferByte(xfer->data_buf[i]);
+        }
+    }
+    if (xfer->quad_buf != NULL) {
+        /* The emulated device has a single data line: quad length still counts. */
+        for (uint32_t i = 0U; i < xfer->quad_len; i++) {
+            (void)Flash_SPI_TransferByte(xfer->quad_buf[i]);
+        }
+    }
+    if (xfer->rx_buf != NULL) {
+        for (uint32_t i = 0U; i < xfer->rx_len; i++) {
+            xfer->rx_buf[i] = Flash_SPI_TransferByte(0xFFU);
+        }
+    }
+
+    Flash_SPI_CS_High();
 }
 
 /******************************************************************************
@@ -1035,6 +1104,98 @@ static void Test_DummyCfgPerModel(void)
     printf("  - mode_byte 0x00 everywhere (M7-M0 on DUMMY_LAST). PASSED.\n\n");
 }
 
+static void Test_BufferedXferAndSharedGeometry(void)
+{
+    uint32_t buf[64];       /* 256 bytes, 4-byte aligned */
+    uint8_t  pg[16];
+
+    printf("[TEST 25] SW-016: one-frame buffered SPI transfer + shared geometry...\n");
+
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;      /* GD25LQ64E: 3-byte address */
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(g_flash_handle.addr_mode == FLASH_ADDR_3BYTE);
+
+    /* --- Direct read: ONE transaction carries header AND data --- */
+    memset(&s_xfer, 0, sizeof(s_xfer));
+    assert(Flash_Read(0x00001000U, buf, 64U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_WORD, 0U) == FLASH_OK);
+    assert(s_xfer.frames == 2U);           /* 1 BUSY poll + 1 data frame */
+    assert(s_xfer.last_first_tx == F_CMD_READ);
+    assert(s_xfer.last_tx_len == 4U);      /* 03h + 3-byte address, no dummy */
+    assert(s_xfer.last_rx_len == 256U);    /* 64 words */
+    assert(s_xfer.last_data_len == 0U);
+    printf("  - Read: header+data in 1 frame (tx_len=%u, rx_len=%u).\n",
+           s_xfer.last_tx_len, s_xfer.last_rx_len);
+
+    /* --- Fast read: the dummy byte rides inside the same header --- */
+    const uint32_t fast_dummy = (uint32_t)g_flash_handle.info->read_cfg[FLASH_READ_FAST].dummy_bytes;
+    memset(&s_xfer, 0, sizeof(s_xfer));
+    assert(Flash_Read(0x00001000U, buf, 8U, FLASH_READ_FAST,
+                      FLASH_READ_UNIT_WORD, 0U) == FLASH_OK);
+    assert(s_xfer.frames == 2U);           /* 1 BUSY poll + 1 data frame */
+    assert(s_xfer.last_tx_len == (1U + 3U + fast_dummy));
+    printf("  - Fast read: %u dummy byte(s) packed into tx_len=%u.\n",
+           fast_dummy, s_xfer.last_tx_len);
+
+    /* --- Page program: header + separate data phase, still one CS frame --- */
+    memset(pg, 0xA5, sizeof(pg));
+    memset(&s_xfer, 0, sizeof(s_xfer));
+    assert(Flash_Write(0x00002000U, pg, sizeof(pg), FLASH_PROGRAM_SINGLE) == FLASH_OK);
+    assert(s_xfer.last_payload_len == (uint32_t)sizeof(pg));
+    assert(s_xfer.last_payload_tx_len == 4U);   /* 02h + 3-byte address */
+    assert(s_xfer.last_data_payload_len == (uint32_t)sizeof(pg));
+    printf("  - Program: payload of %u bytes in the same frame (tx_len=%u).\n",
+           s_xfer.last_payload_len, s_xfer.last_payload_tx_len);
+
+    /* --- Quad page program: same frame, payload on the 4-bit phase --- */
+    memset(&s_xfer, 0, sizeof(s_xfer));
+    assert(Flash_Write(0x00003000U, pg, sizeof(pg), FLASH_PROGRAM_QUAD) == FLASH_OK);
+    assert(s_xfer.last_quad_payload_len == (uint32_t)sizeof(pg));
+    assert(s_xfer.last_data_payload_len == 0U);
+    printf("  - Quad program: %u bytes on the 4-bit phase (tx_len=%u).\n",
+           s_xfer.last_quad_payload_len, s_xfer.last_payload_tx_len);
+
+    /* --- Shared geometry helper: both paths reject identical bad input --- */
+    uint8_t *misaligned = ((uint8_t *)buf) + 1U;
+    assert(Flash_Read(0x00001000U, misaligned, 4U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_WORD, 0U) == FLASH_ERR_ALIGNMENT);
+    assert(Flash_SFC_DMARead(0x00001000U, misaligned, 4U,
+                             FLASH_READ_UNIT_WORD, false, NULL) == FLASH_ERR_ALIGNMENT);
+
+    /* count * unit must not wrap a 32-bit size (0x40000001 * 4) */
+    assert(Flash_Read(0x00001000U, buf, 0x40000001U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_WORD, 0U) == FLASH_ERR_PARAM);
+    assert(Flash_SFC_DMARead(0x00001000U, buf, 0x40000001U,
+                             FLASH_READ_UNIT_WORD, false, NULL) == FLASH_ERR_PARAM);
+    printf("  - Unit/alignment/overflow checks are shared by SPI and SFC paths.\n");
+
+    /* --- Real-hardware SFC path: software must not edit DMA data or CRC --- */
+    static SFC_TypeDef hw_regs;
+    SFC_TypeDef *saved_regs = g_p_sfc_regs;
+    uint32_t hw_buf[4];                    /* 16 bytes, 4-byte aligned */
+
+    memset(&hw_regs, 0, sizeof(hw_regs));
+    hw_regs.STATUS = SFC_STATUS_DMA_DONE;  /* DMA already completed */
+    g_p_sfc_regs = &hw_regs;
+
+    for (uint32_t i = 0U; i < 4U; i++) {
+        hw_buf[i] = 0x5A5A5A5AU;
+    }
+    uint32_t crc_out = 0xDEADBEEFU;
+    assert(Flash_SFC_DMARead(0x00001000U, hw_buf, 4U,
+                             FLASH_READ_UNIT_WORD, true, &crc_out) == FLASH_OK);
+    for (uint32_t i = 0U; i < 4U; i++) {
+        assert(hw_buf[i] == 0x5A5A5A5AU);  /* HW-owned payload untouched */
+    }
+    assert(hw_regs.CRC_RES == 0U);         /* SW did not edit the CRC register */
+    assert(crc_out == 0U);
+
+    g_p_sfc_regs = saved_regs;
+    printf("  - Real-HW SFC path: DMA buffer and CRC_RES untouched by software. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1067,9 +1228,10 @@ int main(void)
     Test_DelayUsConversion();
     Test_VsrWrenNoWel();
     Test_DummyCfgPerModel();
+    Test_BufferedXferAndSharedGeometry();
 
     printf("================================================================\n");
-    printf(" ALL 24 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 25 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;
