@@ -344,8 +344,9 @@ static void Test_TableLookup(void)
 
     for (uint32_t i = 0U; i < FLASH_TABLE_ENTRIES_COUNT; i++) {
         const FLASH_INFO *p_info = &g_flash_table[i];
-        printf("  - Model [%u]: %-22s | JEDEC: 0x%06X | Size: %u KB | Addr: %uB\n",
-               i, p_info->name, p_info->jedec_id, (p_info->flash_size / 1024U), p_info->addr_bytes);
+        printf("  - Model [%u]: JEDEC 0x%06X | ModelId %u | Size: %u KB | Addr: %uB\n",
+               i, p_info->jedec_id, (uint32_t)p_info->model_id,
+               (p_info->flash_size / 1024U), p_info->addr_bytes);
         assert(p_info->page_size == 256U);
         assert(p_info->sector_size == 4096U);
     }
@@ -721,6 +722,18 @@ static void Test_DirectSPIQuadGuard(void)
     status = Flash_Read(0x00001000U, aligned_buf, 16U, FLASH_READ_FAST,
                         FLASH_READ_UNIT_WORD, 0U);
     assert(status == FLASH_OK);
+    /* QPI (4-4-4) is listed in the read-mode enum but deliberately NOT
+     * implemented. Both transfer paths must refuse it with a dedicated error
+     * (not FLASH_ERR_PARAM) so a caller can tell "unknown mode" from
+     * "known but unsupported". */
+    status = Flash_Read(0x00001000U, aligned_buf, 16U, FLASH_READ_QPI,
+                        FLASH_READ_UNIT_WORD, 0U);
+    assert(status == FLASH_ERR_UNSUPPORTED);
+
+    status = Flash_Read(0x00001000U, aligned_buf, 16U, FLASH_READ_QPI,
+                        FLASH_READ_UNIT_WORD, FLASH_READ_OPT_SFC);
+    assert(status == FLASH_ERR_UNSUPPORTED);
+    printf("  - QPI (4-4-4) listed but refused with FLASH_ERR_UNSUPPORTED.\n");
     printf("  - Direct SPI guard verified. PASSED.\n\n");
 }
 

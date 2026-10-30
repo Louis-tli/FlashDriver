@@ -53,7 +53,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
      * [FLASH_IDX_W25Q128JW] W25Q128JW (Winbond 128M-bit / 16MB, 1.8V)
      * ------------------------------------------------------------------------ */
     [FLASH_IDX_W25Q128JW] = {
-        .name         = "W25Q128JW (16MB)",
         .jedec_id     = 0xEF6018U,
         .model_id     = FLASH_MODEL_W25Q128JW,
         .flash_size   = 16U * 1024U * 1024U,
@@ -80,7 +79,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
      * [FLASH_IDX_W25Q512JV] W25Q512JV (Winbond 512M-bit / 64MB)
      * ------------------------------------------------------------------------ */
     [FLASH_IDX_W25Q512JV] = {
-        .name         = "W25Q512JV (64MB)",
         .jedec_id     = 0xEF4020U,
         .model_id     = FLASH_MODEL_W25Q512JV,
         .flash_size   = 64U * 1024U * 1024U,
@@ -107,7 +105,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
      * [FLASH_IDX_W25Q256JV] W25Q256JV (Winbond 256M-bit / 32MB)
      * ------------------------------------------------------------------------ */
     [FLASH_IDX_W25Q256JV] = {
-        .name         = "W25Q256JV (32MB)",
         .jedec_id     = 0xEF4019U,
         .model_id     = FLASH_MODEL_W25Q256JV,
         .flash_size   = 32U * 1024U * 1024U,
@@ -134,7 +131,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
      * [FLASH_IDX_W25M512] W25M512 (Winbond SpiStack 2 x 256Mb = 64MB Multi-Die)
      * ------------------------------------------------------------------------ */
     [FLASH_IDX_W25M512] = {
-        .name         = "W25M512 (2xDie 64MB)",
         .jedec_id     = 0xEF6119U,
         .model_id     = FLASH_MODEL_W25M512,
         .flash_size   = 64U * 1024U * 1024U,
@@ -161,7 +157,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
      * [FLASH_IDX_MX25L512] MX25L512 (Macronix 512K-bit / 64KB)
      * ------------------------------------------------------------------------ */
     [FLASH_IDX_MX25L512] = {
-        .name         = "MX25L512 (512Kb)",
         .jedec_id     = 0xC22010U,
         .model_id     = FLASH_MODEL_MX25L512,
         .flash_size   = 64U * 1024U,
@@ -188,7 +183,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
      * [FLASH_IDX_MX25L512MB] MX25L51245G (Macronix 512M-bit / 64MB)
      * ------------------------------------------------------------------------ */
     [FLASH_IDX_MX25L512MB] = {
-        .name         = "MX25L51245G (512Mb)",
         .jedec_id     = 0xC2201AU,
         .model_id     = FLASH_MODEL_MX25L512,
         .flash_size   = 64U * 1024U * 1024U,
@@ -215,7 +209,6 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
      * [FLASH_IDX_GD25LQ64E] GD25LQ64E (GigaDevice 64M-bit / 8MB, 1.8V)
      * ------------------------------------------------------------------------ */
     [FLASH_IDX_GD25LQ64E] = {
-        .name         = "GD25LQ64E (8MB)",
         .jedec_id     = 0xC86017U,
         .model_id     = FLASH_MODEL_GD25LQ64E,
         .flash_size   = 8U * 1024U * 1024U,

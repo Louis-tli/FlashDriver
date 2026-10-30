@@ -8,49 +8,9 @@
 #include "flash_delay.h"
 
 /******************************************************************************
- * Internal State (SW-017)
- *
- * Two values are kept on purpose:
- *   s_sys_clk_hz    : what the caller asked for (read back by Flash_SysClockGet)
- *   s_loops_per_us  : the converted "loops per microsecond", so the hot path is
- *                     one multiply instead of a divide.
- *
- * RAM cost: 4 extra bytes. ROM saving: no software divider in the image.
+ * Internal State
  ******************************************************************************/
-#define FLASH_DELAY_DENOM   (1000000UL * FLASH_DELAY_CYCLES_PER_LOOP)
-
-/* ceil(clk / denom) evaluated at COMPILE time (an initializer is a constant
- * expression, so this never becomes a runtime divide). */
-#define FLASH_DELAY_CEIL_DIV(clk)   (((clk) / FLASH_DELAY_DENOM) + \
-                                     ((((clk) % FLASH_DELAY_DENOM) != 0UL) ? 1UL : 0UL))
-
-#define FLASH_LOOPS_PER_US_108M     ((uint32_t)FLASH_DELAY_CEIL_DIV(108000000UL))  /* 36 */
-#define FLASH_LOOPS_PER_US_50M      ((uint32_t)FLASH_DELAY_CEIL_DIV( 50000000UL))  /* 17 */
-
-static uint32_t s_sys_clk_hz   = FLASH_SYS_CLK_HZ;
-static uint32_t s_loops_per_us = (uint32_t)FLASH_DELAY_CEIL_DIV(FLASH_SYS_CLK_HZ);
-
-/******************************************************************************
- * Helper: loops-per-microsecond for a supported core clock.
- *
- * Why a switch and not "hz / denom" (SW-017):
- *   Cortex-M0 has no divide instruction, and clang turns even a division by a
- *   compile-time constant into a call to __aeabi_uidiv. That call pulls
- *   libgcc's software divider (~100-200 bytes of ROM) into the image. The
- *   driver only documents two clocks, so the mapping lives in code instead.
- *
- *   Anything else keeps the 108 MHz timing. On a slower core the same loop
- *   count takes longer, so the delay can only get longer, never shorter — the
- *   conservative direction this driver promises.
- ******************************************************************************/
-static uint32_t Flash_LoopsPerUs(uint32_t hz)
-{
-    switch (hz) {
-        case 108000000UL: return FLASH_LOOPS_PER_US_108M;
-        case  50000000UL: return FLASH_LOOPS_PER_US_50M;
-        default:          return FLASH_LOOPS_PER_US_108M;
-    }
-}
+static uint32_t s_sys_clk_hz = FLASH_SYS_CLK_HZ;
 
 /******************************************************************************
  * Public API: Flash_SysClockSet
@@ -60,8 +20,7 @@ void Flash_SysClockSet(uint32_t hz)
     if (hz == 0U) {
         return;                     /* invalid clock: keep current setting */
     }
-    s_sys_clk_hz   = hz;
-    s_loops_per_us = Flash_LoopsPerUs(hz);
+    s_sys_clk_hz = hz;
 }
 
 /******************************************************************************
@@ -84,17 +43,21 @@ uint32_t Flash_SysClockGet(void)
  ******************************************************************************/
 uint32_t Flash_DelayUsToLoops(uint32_t us)
 {
-    /* Clamp instead of dividing to detect overflow.
-     *
-     * The old check "us > 0xFFFFFFFF / loops_per_us" needed a runtime divide.
-     * Clamping to FLASH_DELAY_MAX_US (3 s) keeps "us * loops_per_us" inside
-     * 32 bits for every clock the driver accepts, costs one compare, and no
-     * longer pulls libgcc's divider into the image (SW-017). */
-    if (us > FLASH_DELAY_MAX_US) {
-        us = FLASH_DELAY_MAX_US;
+    const uint32_t denom = 1000000UL * FLASH_DELAY_CYCLES_PER_LOOP;
+    const uint32_t loops_per_us = (s_sys_clk_hz + denom - 1UL) / denom;
+    uint32_t loops;
+
+    if ((us == 0U) || (loops_per_us == 0U)) {
+        return 0U;
     }
 
-    return us * s_loops_per_us;
+    /* Saturate instead of wrapping on very long requests */
+    if (us > (0xFFFFFFFFUL / loops_per_us)) {
+        return 0xFFFFFFFFUL;
+    }
+
+    loops = us * loops_per_us;
+    return loops;
 }
 
 /******************************************************************************

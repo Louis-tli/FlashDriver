@@ -107,17 +107,14 @@ static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
             return FLASH_ERR_PARAM;
         }
 
-        /* No "/" and no "%" here on purpose (SW-017):
-         *   die size is a power of two (32 MiB), so the die index is a shift
-         *   and the in-die offset is a mask. That keeps libgcc's software
-         *   divider (~200 bytes of ROM on Cortex-M0) out of the image. */
-        const uint8_t target_die = (uint8_t)(addr >> Flash_Log2Pow2(info->die_size));
+        /* Which die does this address land on, and where inside that die? */
+        const uint8_t target_die = (uint8_t)(addr / info->die_size);
         if (target_die >= info->die_count) {
             return FLASH_ERR_PARAM;
         }
 
         *p_die = target_die;
-        *p_die_addr = addr & (info->die_size - 1U);
+        *p_die_addr = addr % info->die_size;
     }
     else {
         *p_die = 0U;
@@ -759,9 +756,8 @@ static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_
 
     Flash_SFC_SetReadConfig(read_cfg, g_flash_handle.addr_mode);
 
-    /* effective_unit is 1, 2 or 4 -> ">> 0 / >> 1 / >> 2" instead of a divide
-     * (SW-017: keeps the software divider out of the ROM image). */
-    const uint32_t chunk_count = chunk_len >> (effective_unit >> 1U);
+    /* SFC takes a unit count, not a byte count */
+    const uint32_t chunk_count = chunk_len / effective_unit;
     uint32_t crc_val = 0U;
     return Flash_SFC_DMARead(die_addr, p_buf, chunk_count, unit, use_crc, &crc_val);
 }
@@ -807,6 +803,14 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 
     if (mode >= FLASH_READ_MODE_MAX) {
         return FLASH_ERR_PARAM;
+    }
+
+    /* QPI (4-4-4) is in the mode list but not implemented: the opcode and
+     * address would have to travel on four data lines, which neither the SPI
+     * frame nor the TCON SFC supports. Refuse it by name so a caller gets a
+     * clear error instead of a read performed with the wrong opcode. */
+    if (mode == FLASH_READ_QPI) {
+        return FLASH_ERR_UNSUPPORTED;
     }
 
     const FLASH_INFO *info = g_flash_handle.info;
@@ -925,10 +929,8 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
             return status;
         }
 
-        /* Bytes left in the current 256-byte page.
-         * page_size is a power of two, so "% page_size" is "& (page_size-1)"
-         * (SW-017: no divide, no libgcc). */
-        const uint32_t bytes_to_boundary = info->page_size - (die_addr & (info->page_size - 1U));
+        /* Bytes left in the current 256-byte page */
+        const uint32_t bytes_to_boundary = info->page_size - (die_addr % info->page_size);
         uint32_t chunk_len = (remaining > bytes_to_boundary) ? bytes_to_boundary : remaining;
 
         /* Also clamp to die boundary if multi-die */

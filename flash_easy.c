@@ -87,15 +87,11 @@ int Flash_EraseRange(uint32_t addr, uint32_t len)
         return FLASH_OK;
     }
 
-    /* Sector size is a power of two (4 KiB), so rounding is mask arithmetic.
-     * Avoids "/" and "%" with a runtime divisor, which would drag libgcc's
-     * software divider into the ROM image (SW-017). */
+    /* Erase whole sectors that cover [addr, addr+len) */
     const uint32_t sector = info->sector_size;
-    const uint32_t sector_mask = sector - 1U;                /* 0x00000FFF for 4 KiB */
-
-    uint32_t start = addr & ~sector_mask;                    /* round down */
+    uint32_t start = addr - (addr % sector);                 /* round down */
     uint32_t end   = addr + len;
-    end = (end + sector_mask) & ~sector_mask;                /* round up   */
+    end = ((end + sector - 1U) / sector) * sector;           /* round up   */
 
     for (uint32_t a = start; a < end; a += sector) {
         const int status = Flash_Erase(a, FLASH_ERASE_SECTOR);
