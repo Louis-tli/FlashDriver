@@ -277,6 +277,17 @@ typedef struct
 } FLASH_READ_CFG;
 
 /******************************************************************************
+ * Common Geometry (identical on every supported device)
+ *
+ * These used to be fields of FLASH_INFO, but all seven parts use the same
+ * values, so storing them per entry only made the table bigger and gave the
+ * false impression that they could differ. They are constants now.
+ ******************************************************************************/
+#define FLASH_PAGE_SIZE                 (256U)      /* page program granularity */
+#define FLASH_SECTOR_SIZE               (4096U)     /* smallest erasable unit  */
+#define FLASH_BLOCK_SIZE                (65536U)    /* 64 KiB block erase      */
+
+/******************************************************************************
  * Flash Model Information (Stored in ROM as const)
  ******************************************************************************/
 typedef struct
@@ -287,9 +298,6 @@ typedef struct
     uint32_t            jedec_id;           /* 24-bit JEDEC ID (RDID 9Fh) */
     FLASH_MODEL         model_id;           /* Internal model enum */
     uint32_t            flash_size;         /* Total density in bytes */
-    uint16_t            page_size;          /* Typically 256 bytes */
-    uint32_t            sector_size;        /* Typically 4096 bytes (4KB) */
-    uint32_t            block_size;         /* Typically 65536 bytes (64KB) */
     uint8_t             addr_bytes;         /* 3 or 4 */
 
     /* Quad Enable (QE) Information */

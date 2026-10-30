@@ -347,8 +347,9 @@ static void Test_TableLookup(void)
         printf("  - Model [%u]: JEDEC 0x%06X | ModelId %u | Size: %u KB | Addr: %uB\n",
                i, p_info->jedec_id, (uint32_t)p_info->model_id,
                (p_info->flash_size / 1024U), p_info->addr_bytes);
-        assert(p_info->page_size == 256U);
-        assert(p_info->sector_size == 4096U);
+        /* Geometry is shared by every part (constants, not table fields) */
+        assert(FLASH_PAGE_SIZE == 256U);
+        assert(FLASH_SECTOR_SIZE == 4096U);
     }
     printf("  --> Table lookups PASSED.\n\n");
 }

@@ -54,7 +54,7 @@ void app_start(void)
 - **SFC 안전 Read 시퀀스 내장**:
   - Quad I/O Read 전 `SFC Single 모드 설정` ➔ `SPI Status BUSY=0 폴링 완료` ➔ `SFC Quad I/O 모드 재설정` ➔ `DMA 전송` 시퀀스 자동화.
 - **작은 ROM 풋프린트 (SW-017 실측)**:
-  - `-Oz` 전체 드라이버 **5.3 KB**, easy API만 쓸 때(`--gc-sections`) 5.0 KB, `-flto`까지 쓰면 **3.5 KB**.
+  - `-Oz` 전체 드라이버 **5.2 KB**, easy API만 쓸 때(`--gc-sections`) 4.9 KB, `-flto`까지 쓰면 **3.4 KB**.
   - 모델명 문자열 제거 + 중복 경로 통합(Boot/Init·Protect/Unprotect·칩 소거)으로 감축. 나눗셈은 가독성을 위해 그대로 사용합니다(프로젝트의 다른 코드가 이미 libgcc 나눗셈기를 링크).
   - 모델 정보는 ROM(`.rodata`) 상주, SRAM은 가벼운 핸들 1개만 사용. 동적 메모리 할당(`malloc`) 완전 배제.
 - **다양한 읽기 단위 지원 (Read Access Units - Byte / Halfword / Word)**:
@@ -159,6 +159,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 | 적용 | 내용 |
 |------|------|
 | 모델명 문자열 제거 | `FLASH_INFO.name` 필드와 7개 문자열 삭제 (−약 150 B). 모델 식별은 `jedec_id`/`model_id`로 충분 |
+| 공통 지오메트리 상수화 | 7종 모두 page 256 / sector 4096 / block 65536 → 모델별 필드 삭제, `FLASH_PAGE_SIZE` 등 상수로 (−약 96 B) |
 | 중복 경로 통합 | Boot/Init 공통 경로(`Flash_ProbeBus` + `Flash_ApplyHandleConfig`), Protect/Unprotect(`Flash_WriteBlockProtect`), 칩 소거 다이 루프 하나 |
 | QPI 명시 거부 | 모드 목록에는 추가, 호출 시 `FLASH_ERR_UNSUPPORTED` 반환 (아래 참고) |
 
@@ -168,10 +169,10 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 
 | 빌드 | 이전 | 이후 |
 |------|------|------|
-| 전체 함수 유지 (`-Os`) | 5,860 B | **5,636 B** |
-| 전체 함수 유지 (`-Oz`) | 5,558 B | **5,298 B** |
-| easy API만 + `--gc-sections` (`-Oz`) | 5,074 B | **4,962 B** |
-| 위 + `-flto` | — | **3,524 B** |
+| 전체 함수 유지 (`-Os`) | 5,860 B | **5,548 B** |
+| 전체 함수 유지 (`-Oz`) | 5,558 B | **5,202 B** |
+| easy API만 + `--gc-sections` (`-Oz`) | 5,074 B | **4,862 B** |
+| 위 + `-flto` | — | **3,428 B** |
 
 크기 우선 빌드:
 

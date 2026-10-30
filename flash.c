@@ -929,8 +929,8 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
             return status;
         }
 
-        /* Bytes left in the current 256-byte page */
-        const uint32_t bytes_to_boundary = info->page_size - (die_addr % info->page_size);
+        /* Bytes left in the current 256-byte page (FLASH_PAGE_SIZE) */
+        const uint32_t bytes_to_boundary = FLASH_PAGE_SIZE - (die_addr % FLASH_PAGE_SIZE);
         uint32_t chunk_len = (remaining > bytes_to_boundary) ? bytes_to_boundary : remaining;
 
         /* Also clamp to die boundary if multi-die */

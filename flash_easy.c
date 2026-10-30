@@ -88,7 +88,7 @@ int Flash_EraseRange(uint32_t addr, uint32_t len)
     }
 
     /* Erase whole sectors that cover [addr, addr+len) */
-    const uint32_t sector = info->sector_size;
+    const uint32_t sector = FLASH_SECTOR_SIZE;
     uint32_t start = addr - (addr % sector);                 /* round down */
     uint32_t end   = addr + len;
     end = ((end + sector - 1U) / sector) * sector;           /* round up   */
@@ -115,6 +115,7 @@ uint32_t Flash_SizeBytes(void)
 
 uint32_t Flash_SectorSize(void)
 {
-    const FLASH_INFO *info = Flash_GetInfo();
-    return (info != NULL) ? info->sector_size : 0U;
+    /* Same value on every supported part, so it is a constant. Keep returning
+     * 0 before init so the "not initialized" contract stays the same. */
+    return (Flash_GetInfo() != NULL) ? FLASH_SECTOR_SIZE : 0U;
 }
