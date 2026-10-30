@@ -59,9 +59,24 @@ uint32_t Flash_SysClockGet(void);
  *--------------------------------------------------------------------------*/
 
 /**
+ * @brief  Longest single delay the driver accepts, in microseconds (3 s).
+ *
+ * Why there is a ceiling at all (SW-017, ROM size):
+ *   The conversion is "loops = us * loops_per_us". To reject an overflow the
+ *   old code computed "us > 0xFFFFFFFF / loops_per_us", which needs a runtime
+ *   divide and therefore pulls libgcc's software divider (~200 bytes of ROM)
+ *   into an image that has no divide instruction. Instead the input is clamped
+ *   to a fixed ceiling that is safe for any clock the driver accepts:
+ *       loops_per_us <= 1431 (at 4.29 GHz)  ->  3,000,000 us * 1431 < 2^32
+ *   Flash waits are milliseconds at most (reset 1 ms, erase is BUSY-polled),
+ *   so 3 s is far more than any real operation needs.
+ */
+#define FLASH_DELAY_MAX_US          (3000000UL)
+
+/**
  * @brief  Convert microseconds to raw loop count (pure function, testable).
  *         Rounds UP: result * loops never under-delays the requested time.
- *         Saturates at 0xFFFFFFFF (~119 s @ 108 MHz).
+ *         Requests above FLASH_DELAY_MAX_US are clamped to 3 s.
  */
 uint32_t Flash_DelayUsToLoops(uint32_t us);
 

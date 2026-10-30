@@ -331,6 +331,31 @@ static inline bool Flash_FamilyMatch(uint32_t jedec_a, uint32_t jedec_b)
     return ((jedec_a & FLASH_JEDEC_FAMILY_MASK) == (jedec_b & FLASH_JEDEC_FAMILY_MASK));
 }
 
+/**
+ * @brief log2 of a power-of-two value (0 for 1, 8 for 256, 12 for 4096, ...).
+ *
+ * Why this exists (SW-017, ROM size):
+ *   The Cortex-M0 has no divide instruction, so any 32-bit "/" or "%" with a
+ *   runtime divisor pulls in libgcc (__aeabi_uidiv + __aeabi_uidivmod, about
+ *   200 bytes of ROM). Every geometry value in the model table (page 256 B,
+ *   sector 4 KiB, die 32 MiB) is a power of two, so the driver uses
+ *   "value >> Flash_Log2Pow2(geometry)" instead of a divide, and
+ *   "value & (geometry - 1)" instead of a modulo.
+ *
+ * Cost: a handful of loop iterations, done at most once per call, and a few
+ * bytes of stack. That is a RAM/time trade for ROM, which is what we want.
+ */
+static inline uint32_t Flash_Log2Pow2(uint32_t value)
+{
+    uint32_t shift = 0U;
+
+    while (value > 1U) {
+        value >>= 1U;
+        shift++;
+    }
+    return shift;
+}
+
 /******************************************************************************
  * Public Driver APIs
  ******************************************************************************/

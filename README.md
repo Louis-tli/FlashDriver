@@ -53,8 +53,9 @@ void app_start(void)
   - **SFC Data Path**: 대용량 고속 Read 전용. Memory-Mapped 주소를 통해 2KB 또는 4KB 단위의 DMA Transfer로 고속 데이터 수신 및 하드웨어 CRC32 연산 옵션 지원.
 - **SFC 안전 Read 시퀀스 내장**:
   - Quad I/O Read 전 `SFC Single 모드 설정` ➔ `SPI Status BUSY=0 폴링 완료` ➔ `SFC Quad I/O 모드 재설정` ➔ `DMA 전송` 시퀀스 자동화.
-- **초경량 메모리 풋프린트 (< 3KB)**:
-  - `flash.o` 코드 크기 약 2.2 KB.
+- **작은 ROM 풋프린트 (SW-017 실측)**:
+  - `-Oz` 전체 드라이버 **5.4 KB** (text 4.5 + rodata 0.76 + data/bss 0.1), easy API만 쓸 때 `--gc-sections` 4.9 KB, `-flto`까지 쓰면 **3.6 KB**.
+  - Cortex-M0 나눗셈 명령 부재를 고려해 `/`·`%`를 시프트/마스크로 대체 → libgcc 소프트웨어 나눗셈기(`__aeabi_uidiv`) 미링크.
   - 모델 정보는 ROM(`.rodata`) 상주, SRAM은 가벼운 핸들 1개만 사용. 동적 메모리 할당(`malloc`) 완전 배제.
 - **다양한 읽기 단위 지원 (Read Access Units - Byte / Halfword / Word)**:
   - `FLASH_READ_UNIT_BYTE` (8-bit), `FLASH_READ_UNIT_HALFWORD` (16-bit), `FLASH_READ_UNIT_WORD` (32-bit, 기본값) 지원.
@@ -151,6 +152,40 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 
 ---
 
+## 📦 코드 크기 (ROM) — SW-017
+
+Cortex-M0에는 **나눗셈 명령이 없습니다.** `uint32_t / 값` 한 줄이 libgcc의 소프트웨어 나눗셈기(`__aeabi_uidiv`)를 이미지에 통째로 끌어옵니다.
+SW-017은 **ROM을 줄이고 RAM(스택·전역 몇 바이트)은 조금 더 쓰는** 방향으로 정리했습니다.
+
+| 적용 | 내용 |
+|------|------|
+| 나눗셈 제거 | page(256)/sector(4K)/die(32M)가 모두 2의 거듭제곱 → `>>`·`&` 로 대체 |
+| libgcc 제거 | `__aeabi_uidiv`·`__aeabi_uidivmod`·`__aeabi_lmul` 참조 0 (실측) |
+| 중복 통합 | Boot/Init 공통 경로, Protect/Unprotect, 칩 소거 분기 |
+| 지연 클램프 | `us × loops_per_us` 오버플로를 **나눗셈 없이** 3초 클램프로 처리 |
+
+측정 (Cortex-M0 Thumb, lld, libgcc 제외):
+
+| 빌드 | 이전 | 이후 |
+|------|------|------|
+| 전체 함수 유지 (`-Os`) | 5,860 B | **5,608 B** |
+| 전체 함수 유지 (`-Oz`) | 5,558 B | **5,366 B** |
+| easy API만 + `--gc-sections` (`-Oz`) | 5,074 B | **4,920 B** |
+| 위 + `-flto` | — | **3,552 B** |
+
+크기 우선 빌드:
+
+```bash
+clang --target=arm-none-eabi -mcpu=cortex-m0 -mthumb \
+      -Oz -flto -std=c99 -ffunction-sections -fdata-sections -I. -c <각 파일>.c
+# 링크 단계에서 -Wl,--gc-sections 추가
+```
+
+> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(25/25 테스트 통과).  
+> 더 줄이려면 **기능을 줄이는** 선택이 필요합니다: 모델명 문자열 제거(−125 B) · CRC 알고리즘 고정(−170 B) · `flash_easy` 제외(−296 B) · 지원 모델 축소(모델당 −96 B).
+
+---
+
 ## 🔌 SPI 전송 방식 (SW-016)
 
 명령·주소·데이터를 바이트 단위로 각각 호출하지 않고, **한 번의 /CS 프레임**으로 묶어 전송합니다.
@@ -203,7 +238,8 @@ Flash_DelayUs(100);             /* 최소 100µs 대기 */
 ```
 
 - 108MHz: 1µs = 36 loops / 50MHz: 1µs = 17 loops (올림)
-- 최대 지연: 포화 한계 ≈ 119초 (108MHz 기준, `uint32_t` 루프 수 한계)
+- 최대 지연: `FLASH_DELAY_MAX_US` = **3초** (초과 요청은 클램프 — 나눗셈 없는 오버플로 방지, SW-017)
+- 그 외 클록: 108MHz 기준 타이밍으로 폴백 — 느린 코어에서는 지연이 더 길어질 뿐, 짧아지지 않음
 - `Flash_DelayLoops(count)`는 기존 루프 대기 API (하위 호환 유지)
 
 ---

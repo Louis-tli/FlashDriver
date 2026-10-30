@@ -107,13 +107,17 @@ static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
             return FLASH_ERR_PARAM;
         }
 
-        const uint8_t target_die = (uint8_t)(addr / info->die_size);
+        /* No "/" and no "%" here on purpose (SW-017):
+         *   die size is a power of two (32 MiB), so the die index is a shift
+         *   and the in-die offset is a mask. That keeps libgcc's software
+         *   divider (~200 bytes of ROM on Cortex-M0) out of the image. */
+        const uint8_t target_die = (uint8_t)(addr >> Flash_Log2Pow2(info->die_size));
         if (target_die >= info->die_count) {
             return FLASH_ERR_PARAM;
         }
 
         *p_die = target_die;
-        *p_die_addr = addr % info->die_size;
+        *p_die_addr = addr & (info->die_size - 1U);
     }
     else {
         *p_die = 0U;
@@ -221,6 +225,75 @@ int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
 }
 
 /******************************************************************************
+ * Helper (SW-017): common bring-up + identification sequence.
+ *
+ * Flash_BootInitOpt() and Flash_InitOpt() used to carry their own copy of this
+ * sequence (SPI/SFC init -> optional reset -> JEDEC ID -> floating-bus check).
+ * Keeping one copy saves roughly 150 bytes of ROM.
+ *
+ * On success *p_jedec_id holds the 24-bit ID and the driver state is untouched.
+ * On failure the fail-safe state (ERROR / NO_CONNECT) is already set.
+ ******************************************************************************/
+static int Flash_ProbeBus(uint32_t options, uint32_t *p_jedec_id)
+{
+    /* 1. Controller bring-up: SPI at a safe 10 MHz, SFC with a 4 KiB page */
+    Flash_SPI_Init();
+    Flash_SPI_SetSpeed(10000000U);
+    Flash_SFC_Init(SFC_DEFAULT_PAGE_SIZE_4K);
+    g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
+
+    /* 2. Software reset clears any stale bus state (skippable for fast boot) */
+    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U) {
+        (void)Flash_Reset();
+        Flash_DelayUs(2000U);   /* ~2ms reset settle (SW-014: was 50000 loops) */
+    }
+
+    /* 3. Read the JEDEC ID (9Fh) */
+    uint32_t id = 0U;
+    int status = Flash_ReadJEDECID(&id);
+    if (status != FLASH_OK) {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return status;
+    }
+
+    /* 4. An all-0 or all-1 answer means nothing is driving the bus */
+    id &= FLASH_JEDEC_ID_MASK;
+    if ((id == 0x000000U) || (id == 0xFFFFFFU)) {
+        g_flash_handle.state = FLASH_STATE_NO_CONNECT;
+        return FLASH_ERR_NO_CONNECT;
+    }
+
+    *p_jedec_id = id;
+    return FLASH_OK;
+}
+
+/******************************************************************************
+ * Helper (SW-017): fill the runtime handle for the chosen device and apply its
+ * per-die configuration (4-byte mode + QE). Shared by both init paths.
+ ******************************************************************************/
+static int Flash_ApplyHandleConfig(const FLASH_INFO *p_info,
+                                   uint8_t cfg_addr_mode,
+                                   FLASH_CRC_ALGO crc_algo)
+{
+    g_flash_handle.info        = p_info;
+    g_flash_handle.addr_mode   = Flash_ResolveAddrMode(cfg_addr_mode, p_info);
+    g_flash_handle.crc_algo    = crc_algo;
+    g_flash_handle.current_die = 0U;
+    g_flash_handle.qe_enabled  = false;
+    g_flash_handle.last_crc    = 0U;
+
+    /* Non-common configuration has to run once per die (QE + 4-byte mode) */
+    const int status = Flash_ApplyProductInit();
+    if (status != FLASH_OK) {
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return status;
+    }
+
+    g_flash_handle.state = FLASH_STATE_READY;
+    return FLASH_OK;
+}
+
+/******************************************************************************
  * Public API: Flash_BootInit (ID check -> settings -> configure -> lock)
  ******************************************************************************/
 int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
@@ -230,32 +303,14 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         return FLASH_ERR_BUSY;
     }
 
-    /* 1. Initialize SPI controller (safe) + SFC with default page size */
-    Flash_SPI_Init();
-    Flash_SPI_SetSpeed(10000000U);
-    Flash_SFC_Init(SFC_DEFAULT_PAGE_SIZE_4K);
-    g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
-
-    /* 2. Software Reset to clear any stale bus state (skippable for fast boot) */
-    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U) {
-        (void)Flash_Reset();
-        Flash_DelayUs(2000U);   /* ~2ms reset settle (SW-014: was 50000 loops) */
-    }
-
-    /* 3. Read JEDEC ID and confirm the device responds */
+    /* 1-2. Bring the bus up and read the JEDEC ID */
     uint32_t jedec_id = 0U;
-    int status = Flash_ReadJEDECID(&jedec_id);
+    int status = Flash_ProbeBus(options, &jedec_id);
     if (status != FLASH_OK) {
-        g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
-    jedec_id &= FLASH_JEDEC_ID_MASK;
-    if ((jedec_id == 0x000000U) || (jedec_id == 0xFFFFFFU)) {
-        g_flash_handle.state = FLASH_STATE_NO_CONNECT;
-        return FLASH_ERR_NO_CONNECT;
-    }
 
-    /* 4. Basic-read the boot settings block from Flash */
+    /* 3. Basic-read the boot settings block from Flash */
     FLASH_BOOT_CONFIG cfg;
     status = Flash_BasicRead(config_addr, &cfg, (uint32_t)sizeof(cfg));
     if (status != FLASH_OK) {
@@ -263,14 +318,14 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         return status;
     }
 
-    /* 5. Validate settings block (magic + checksum) */
+    /* 4. Validate the settings block (magic + checksum) */
     if ((cfg.magic != FLASH_BOOT_CFG_MAGIC) ||
         (cfg.crc != Flash_ConfigCrc(&cfg))) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_PARAM;
     }
 
-    /* 6. Look up the selected product. The config's model field selects an exact
+    /* 5. Look up the selected product. The config's model field selects an exact
      *    variant when needed; otherwise fall back to the expected JEDEC ID. */
     const FLASH_INFO *p_info = NULL;
     if (cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN) {
@@ -284,37 +339,30 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         return FLASH_ERR_UNSUPPORTED;
     }
 
-    /* 7. Fail-safe validation: the actual device must match the selection
+    /* 6. Fail-safe validation: the actual device must match the selection
      *    (exact or same product family). A wrong / unknown ID is refused. */
     if (!Flash_FamilyMatch(jedec_id, cfg.jedec_expect)) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
     }
 
-    /* 8. Configure from the settings block + product descriptor */
-    g_flash_handle.info         = p_info;
-    g_flash_handle.addr_mode    = Flash_ResolveAddrMode(cfg.addr_mode, p_info);
-    g_flash_handle.crc_algo     = (cfg.crc_algo < (uint8_t)FLASH_CRC_ALGO_MAX)
-                                  ? (FLASH_CRC_ALGO)cfg.crc_algo : FLASH_CRC32;
-    g_flash_handle.current_die  = 0U;
-    g_flash_handle.qe_enabled   = false;
-    g_flash_handle.last_crc     = 0U;
+    /* 7. Optional SFC page size override from the settings block */
     if ((cfg.sfc_page_size == SFC_DEFAULT_PAGE_SIZE_2K) ||
         (cfg.sfc_page_size == SFC_DEFAULT_PAGE_SIZE_4K)) {
         g_flash_handle.sfc_page_size = cfg.sfc_page_size;
         Flash_SFC_Init(cfg.sfc_page_size);
     }
 
-    /* 9. Apply non-common config to every die (QE + 4-Byte mode) */
-    status = Flash_ApplyProductInit();
+    /* 8. Configure the handle + every die (QE / 4-byte mode) */
+    const FLASH_CRC_ALGO crc_algo = (cfg.crc_algo < (uint8_t)FLASH_CRC_ALGO_MAX)
+                                    ? (FLASH_CRC_ALGO)cfg.crc_algo : FLASH_CRC32;
+    status = Flash_ApplyHandleConfig(p_info, cfg.addr_mode, crc_algo);
     if (status != FLASH_OK) {
-        g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
 
-    /* 10. Lock the selection (immutable) and go READY */
+    /* 9. Lock the selection (immutable for the rest of the boot) */
     g_flash_handle.locked = true;
-    g_flash_handle.state  = FLASH_STATE_READY;
     return FLASH_OK;
 }
 
@@ -329,62 +377,28 @@ int Flash_BootInit(uint32_t config_addr)
  ******************************************************************************/
 int Flash_InitOpt(uint32_t options)
 {
-    /* 1. Initialize low-level SPI controller hardware */
-    Flash_SPI_Init();
-
-    /* 2. Configure safe SPI clock (e.g., 10 MHz) for device probing */
-    Flash_SPI_SetSpeed(10000000U);
-
-    /* 3. Initialize SFC IP with default 4KB transfer page size */
-    Flash_SFC_Init(SFC_DEFAULT_PAGE_SIZE_4K);
-    g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
-
-    /* 4. Issue Software Reset to clear any prior bus states (skippable) */
-    if ((options & FLASH_INIT_OPT_NO_RESET) == 0U) {
-        (void)Flash_Reset();
-        Flash_DelayUs(2000U);   /* ~2ms reset settle (SW-014: was 50000 loops) */
-    }
-
-    /* 5. Read JEDEC Identification (9Fh) */
+    /* 1. Bring the bus up and read the JEDEC ID */
     uint32_t jedec_id = 0U;
-    int status = Flash_ReadJEDECID(&jedec_id);
+    int status = Flash_ProbeBus(options, &jedec_id);
     if (status != FLASH_OK) {
-        g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
 
-    /* Check for floating/unconnected bus (all 0s or all 1s) */
-    if ((jedec_id == 0x00000000U) || (jedec_id == 0x00FFFFFFU)) {
-        g_flash_handle.state = FLASH_STATE_NO_CONNECT;
-        return FLASH_ERR_NO_CONNECT;
-    }
-
-    /* 6. Lookup device configuration from ROM table */
+    /* 2. Look the ID up in the model table (exact match only) */
     const FLASH_INFO *p_info = Flash_FindDevice(jedec_id);
     if (p_info == NULL) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
     }
 
-    /* Populate runtime handle */
-    g_flash_handle.info         = p_info;
-    g_flash_handle.addr_mode    = Flash_ResolveAddrMode((uint8_t)FLASH_ADDR_MODE_DEFAULT, p_info);
-    g_flash_handle.crc_algo     = FLASH_CRC32;
-    g_flash_handle.current_die  = 0U;
-    g_flash_handle.qe_enabled   = false;
-    g_flash_handle.last_crc     = 0U;
-
-    /* 7. Apply non-common config to every die (4-Byte mode + QE) */
-    status = Flash_ApplyProductInit();
+    /* 3. Configure the handle + every die, then go READY */
+    status = Flash_ApplyHandleConfig(p_info, (uint8_t)FLASH_ADDR_MODE_DEFAULT, FLASH_CRC32);
     if (status != FLASH_OK) {
-        g_flash_handle.state = FLASH_STATE_ERROR;
         return status;
     }
 
-    /* 8. Set high-speed operational clock (e.g. 50MHz for standard operations) */
+    /* 4. High-speed operational clock for normal use */
     Flash_SPI_SetSpeed(50000000U);
-
-    g_flash_handle.state = FLASH_STATE_READY;
     return FLASH_OK;
 }
 
@@ -595,9 +609,18 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 }
 
 /******************************************************************************
- * Public API: Flash_Unprotect (SW-013 / G2)
+ * Helper (SW-017): write the 4 block-protect bits of SR1 in one place.
+ *
+ *   Protect(bp)   -> write BP3..BP0 = bp
+ *   Unprotect()   -> write BP3..BP0 = 0
+ *
+ * Both are the same operation with a different nibble, so they share one body
+ * instead of two near-identical ones (~50 bytes of ROM saved). QE and every
+ * other SR1 bit are preserved exactly as read.
+ *
+ * Bits used: BP0=bit2, BP1=bit3, BP2=bit4, BP3=bit5 (see flash.h).
  ******************************************************************************/
-int Flash_Unprotect(void)
+static int Flash_WriteBlockProtect(uint8_t bp_mask)
 {
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
@@ -610,15 +633,24 @@ int Flash_Unprotect(void)
         return status;
     }
 
-    /* Clear BP0..BP3 (block protect), preserve QE and all other bits. */
-    const uint8_t clear_mask = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
-                                         FLASH_SR1_BP2 | FLASH_SR1_BP3);
-    const uint8_t new_sr1 = (uint8_t)(sr1 & (uint8_t)(~clear_mask));
+    const uint8_t bp_field = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
+                                       FLASH_SR1_BP2 | FLASH_SR1_BP3);
+    const uint8_t bp_bits  = (uint8_t)((bp_mask & 0x0FU) << 2);      /* nibble -> bits 2..5 */
+    const uint8_t new_sr1  = (uint8_t)((sr1 & (uint8_t)(~bp_field)) | bp_bits);
+
     if (new_sr1 == sr1) {
-        return FLASH_OK;   /* already unprotected */
+        return FLASH_OK;            /* already in the requested state */
     }
 
     return Flash_WriteStatus(1U, new_sr1);
+}
+
+/******************************************************************************
+ * Public API: Flash_Unprotect (SW-013 / G2)
+ ******************************************************************************/
+int Flash_Unprotect(void)
+{
+    return Flash_WriteBlockProtect(0U);      /* clear every BP bit */
 }
 
 /******************************************************************************
@@ -626,24 +658,7 @@ int Flash_Unprotect(void)
  ******************************************************************************/
 int Flash_Protect(uint8_t bp_mask)
 {
-    const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL) {
-        return FLASH_ERR_PARAM;
-    }
-
-    uint8_t sr1 = 0U;
-    int status = Flash_ReadStatus(1U, &sr1);
-    if (status != FLASH_OK) {
-        return status;
-    }
-
-    /* Replace BP0..BP3 with the requested 4-bit pattern, preserve the rest. */
-    const uint8_t bp_mask_bits = (uint8_t)((bp_mask & 0x0FU) << 2);
-    const uint8_t clear_mask   = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
-                                           FLASH_SR1_BP2 | FLASH_SR1_BP3);
-    const uint8_t new_sr1 = (uint8_t)((sr1 & (uint8_t)(~clear_mask)) | bp_mask_bits);
-
-    return Flash_WriteStatus(1U, new_sr1);
+    return Flash_WriteBlockProtect(bp_mask); /* apply the requested BP pattern */
 }
 
 /******************************************************************************
@@ -744,7 +759,9 @@ static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_
 
     Flash_SFC_SetReadConfig(read_cfg, g_flash_handle.addr_mode);
 
-    const uint32_t chunk_count = chunk_len / effective_unit;
+    /* effective_unit is 1, 2 or 4 -> ">> 0 / >> 1 / >> 2" instead of a divide
+     * (SW-017: keeps the software divider out of the ROM image). */
+    const uint32_t chunk_count = chunk_len >> (effective_unit >> 1U);
     uint32_t crc_val = 0U;
     return Flash_SFC_DMARead(die_addr, p_buf, chunk_count, unit, use_crc, &crc_val);
 }
@@ -908,8 +925,10 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
             return status;
         }
 
-        /* Compute remaining capacity in current 256-byte Flash page */
-        const uint32_t bytes_to_boundary = info->page_size - (die_addr % info->page_size);
+        /* Bytes left in the current 256-byte page.
+         * page_size is a power of two, so "% page_size" is "& (page_size-1)"
+         * (SW-017: no divide, no libgcc). */
+        const uint32_t bytes_to_boundary = info->page_size - (die_addr & (info->page_size - 1U));
         uint32_t chunk_len = (remaining > bytes_to_boundary) ? bytes_to_boundary : remaining;
 
         /* Also clamp to die boundary if multi-die */
@@ -965,38 +984,24 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return FLASH_ERR_PARAM;
     }
 
-    /* Full Chip Erase handling */
+    /* Full Chip Erase handling.
+     *
+     * A single-die part is simply "one die" here, so the old duplicated
+     * single-die branch is gone: the loop below covers both cases and saves
+     * ~70 bytes of ROM (SW-017). Flash_SelectDie() is a no-op on a single-die
+     * device, so nothing changes on the wire for those parts. */
     if (mode == FLASH_ERASE_CHIP) {
-        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
-            /* Erase each die sequentially for W25M512 */
-            for (uint8_t d = 0U; d < info->die_count; d++) {
-                int status = Flash_SelectDie(d);
-                if (status != FLASH_OK) {
-                    return status;
-                }
+        const uint8_t dies = ((info->features & FLASH_FEAT_MULTI_DIE) != 0U)
+                             ? info->die_count : 1U;
 
-                status = Flash_WaitBusy(200000U);
-                if (status != FLASH_OK) {
-                    return status;
-                }
-
-                status = Flash_WriteEnable();
-                if (status != FLASH_OK) {
-                    return status;
-                }
-
-                Flash_SPI_SendCmd(F_CMD_CHIP_ERASE);
-
-                /* Chip erase can take multiple seconds */
-                status = Flash_WaitBusy(50000000U);
-                if (status != FLASH_OK) {
-                    return status;
-                }
+        for (uint8_t d = 0U; d < dies; d++) {
+            int status = Flash_SelectDie(d);
+            if (status != FLASH_OK) {
+                return status;
             }
-            return FLASH_OK;
-        }
-        else {
-            int status = Flash_WaitBusy(200000U);
+
+            /* Wait for any previous operation, then arm and issue the erase */
+            status = Flash_WaitBusy(200000U);
             if (status != FLASH_OK) {
                 return status;
             }
@@ -1007,8 +1012,14 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
             }
 
             Flash_SPI_SendCmd(F_CMD_CHIP_ERASE);
-            return Flash_WaitBusy(50000000U);
+
+            /* Chip erase can take multiple seconds */
+            status = Flash_WaitBusy(50000000U);
+            if (status != FLASH_OK) {
+                return status;
+            }
         }
+        return FLASH_OK;
     }
 
     /* Sector / Block Erase handling */
