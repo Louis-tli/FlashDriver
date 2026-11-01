@@ -193,6 +193,11 @@ typedef enum
 #define FLASH_SR1_BP1                   (1U << 3)   /* Block Protect 1 */
 #define FLASH_SR1_BP2                   (1U << 4)   /* Block Protect 2 */
 #define FLASH_SR1_BP3                   (1U << 5)   /* Block Protect 3 (or TB) */
+#define FLASH_SR1_BP4                   (1U << 6)   /* Block Protect 4 (S6) on GD25LQ64E.
+                                                         NOTE: on Macronix parts this very
+                                                         bit is the quad-enable (QE) bit,
+                                                         so it may only be touched when
+                                                         FLASH_FEAT_BP4 is present. */
 #define FLASH_SR1_QE_MX25L              (1U << 6)   /* Quad Enable for Macronix */
 #define FLASH_SR1_SRP0                  (1U << 7)   /* Status Register Protect 0 */
 
@@ -211,6 +216,8 @@ typedef enum
 #define FLASH_FEAT_MULTI_DIE            (1U << 3)
 #define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* Writes SR1 and SR2 together (GD25LQ64E) */
 #define FLASH_FEAT_VSR_WREN             (1U << 5)   /* Supports 50h Volatile SR Write Enable */
+#define FLASH_FEAT_BP4                  (1U << 6)   /* SR1 bit6 is a 5th block-protect bit,
+                                                         NOT the quad-enable bit */
 
 /******************************************************************************
  * JEDEC ID / Family Matching
@@ -425,9 +432,11 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val);
 int Flash_Unprotect(void);
 
 /**
- * @brief  Set block-protect (BP) bits on the active die from a 4-bit mask
- *         (BP3..BP0) to protect memory regions. Preserves QE and other bits.
- *         (SW-013 / G2)
+ * @brief  Set block-protect (BP) bits on the active die from a mask to protect
+ *         memory regions. Preserves QE and other bits. (SW-013 / G2)
+ *         bits 3..0 = BP3..BP0. Bit 4 = BP4 (only on parts that carry
+ *         FLASH_FEAT_BP4, e.g. GD25LQ64E); it is ignored elsewhere so that the
+ *         Macronix quad-enable bit (same position) is never disturbed.
  */
 int Flash_Protect(uint8_t bp_mask);
 

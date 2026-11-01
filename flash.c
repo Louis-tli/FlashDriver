@@ -581,8 +581,68 @@ static int Flash_SrWriteEnable(void)
 }
 
 /******************************************************************************
- * Public API: Flash_WriteStatus
+ * Status Register Write (SW-019)
+ *
+ * Why the GD25LQ64E needs its own path
+ * ------------------------------------
+ * The part has no 31h (SR2-only) command. 01h is the ONLY way to reach SR2,
+ * and it is a FIXED 16-bit command: one SR1 byte, then one SR2 byte.
+ * Datasheet 7.4: if CS# is driven high after the 8th data bit the command is
+ * still executed, SR1 is written, but QE and CMP are CLEARED to 0 in SPI mode.
+ * A "SR1 only" write therefore drops the device out of quad mode silently,
+ * while the handle keeps qe_enabled = true and every later quad read returns
+ * garbage. So on parts carrying FLASH_FEAT_STATUS_2BYTE_WRITE every status
+ * write is issued as a full 16-bit frame: the register that is not being
+ * changed is read and echoed untouched, and BOTH bytes are verified after.
  ******************************************************************************/
+
+/* Bits a WRSR command can actually change.
+ * SR1: S7..S2 (SRP0, BP4..BP0). S1 (WEL) and S0 (WIP) are read-only.
+ * SR2: S14..S8 except S10. S15 (SUS) and S10 are read-only. */
+#define FLASH_SR1_WRITABLE_MASK  (0xFCU)
+#define FLASH_SR2_WRITABLE_MASK  (0x7BU)
+
+/**
+ * @brief  Send one 16-bit WRSR (01h + SR1 + SR2) and check both bytes.
+ *         Reserved for parts that cannot write SR2 on its own (GD25LQ64E).
+ */
+static int Flash_WriteStatusPair(uint8_t sr1, uint8_t sr2)
+{
+    int status = Flash_SrWriteEnable();
+    if (status != FLASH_OK) {
+        return status;
+    }
+
+    const uint8_t frame[3] = { F_CMD_WRSR1, sr1, sr2 };  /* SR1 + SR2 in one frame */
+    Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
+
+    status = Flash_WaitBusy(200000U);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
+    /* Read BOTH bytes back. A truncated frame, a rejected write or a cleared
+     * QE bit is reported here instead of surfacing later as bad data. */
+    uint8_t rb1 = 0U;
+    uint8_t rb2 = 0U;
+    status = Flash_ReadStatus(1U, &rb1);
+    if (status != FLASH_OK) {
+        return status;
+    }
+    status = Flash_ReadStatus(2U, &rb2);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
+    if (((rb1 ^ sr1) & FLASH_SR1_WRITABLE_MASK) != 0U) {
+        return FLASH_ERR_WRITE_FAIL;
+    }
+    if (((rb2 ^ sr2) & FLASH_SR2_WRITABLE_MASK) != 0U) {
+        return FLASH_ERR_WRITE_FAIL;
+    }
+    return FLASH_OK;
+}
+
 int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 {
     const FLASH_INFO *info = g_flash_handle.info;
@@ -590,26 +650,35 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
         return FLASH_ERR_PARAM;
     }
 
-    /* GigaDevice (GD25LQ64E) uses 2-byte WRSR (01h) writing SR1 and SR2 simultaneously */
-    if (((info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U) && (reg_idx == 2U)) {
+    /* ---- GigaDevice GD25LQ64E: coupled 16-bit write --------------------- */
+    if ((info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U) {
+        if ((reg_idx != 1U) && (reg_idx != 2U)) {
+            return FLASH_ERR_UNSUPPORTED;   /* this part has no 11h */
+        }
+
         uint8_t sr1 = 0U;
+        uint8_t sr2 = 0U;
         int status = Flash_ReadStatus(1U, &sr1);
         if (status != FLASH_OK) {
             return status;
         }
-
-        status = Flash_SrWriteEnable();
+        status = Flash_ReadStatus(2U, &sr2);
         if (status != FLASH_OK) {
             return status;
         }
 
-        const uint8_t frame[3] = { F_CMD_WRSR1, sr1, val };  /* SR1 + SR2 in one frame */
-        Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
-
-        return Flash_WaitBusy(200000U);
+        /* Swap only the byte the caller asked for; the other byte is echoed
+         * exactly as read, which is what keeps QE (and CMP) alive. */
+        if (reg_idx == 1U) {
+            sr1 = val;
+        }
+        else {
+            sr2 = val;
+        }
+        return Flash_WriteStatusPair(sr1, sr2);
     }
 
-    /* Standard Status Register Write */
+    /* ---- Standard one-byte status write -------------------------------- */
     int status = Flash_SrWriteEnable();
     if (status != FLASH_OK) {
         return status;
@@ -666,10 +735,23 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
         return status;
     }
 
-    const uint8_t bp_field = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
-                                       FLASH_SR1_BP2 | FLASH_SR1_BP3);
-    const uint8_t bp_bits  = (uint8_t)((bp_mask & 0x0FU) << 2);      /* nibble -> bits 2..5 */
-    const uint8_t new_sr1  = (uint8_t)((sr1 & (uint8_t)(~bp_field)) | bp_bits);
+    /* BP0..BP3 live in SR1 bits 2..5. Parts that carry a fifth block-protect
+     * bit (GD25LQ64E: S6 = BP4) additionally take bit 4 of bp_mask.
+     * The mask is only widened when FLASH_FEAT_BP4 is present: on Macronix
+     * parts bit 6 of SR1 is the quad-enable bit and must never be cleared
+     * here. (SW-019) */
+    uint8_t bp_field = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
+                                 FLASH_SR1_BP2 | FLASH_SR1_BP3);
+    uint8_t bp_bits  = (uint8_t)((bp_mask & 0x0FU) << 2);    /* nibble -> bits 2..5 */
+
+    if ((info->features & FLASH_FEAT_BP4) != 0U) {
+        bp_field = (uint8_t)(bp_field | FLASH_SR1_BP4);
+        if ((bp_mask & 0x10U) != 0U) {
+            bp_bits = (uint8_t)(bp_bits | FLASH_SR1_BP4);    /* mask bit4 -> BP4 */
+        }
+    }
+
+    const uint8_t new_sr1  = (uint8_t)((sr1 & (uint8_t)(~bp_field)) | (bp_bits & bp_field));
 
     if (new_sr1 == sr1) {
         return FLASH_OK;            /* already in the requested state */

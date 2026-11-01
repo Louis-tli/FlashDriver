@@ -54,7 +54,7 @@ void app_start(void)
 - **SFC 안전 Read 시퀀스 내장**:
   - Quad I/O Read 전 `SFC Single 모드 설정` ➔ `SPI Status BUSY=0 폴링 완료` ➔ `SFC Quad I/O 모드 재설정` ➔ `DMA 전송` 시퀀스 자동화.
 - **작은 ROM 풋프린트 (SW-017 실측)**:
-  - `-Oz` 전체 드라이버 **5.3 KB**, easy API만 쓸 때(`--gc-sections`) 5.0 KB, `-flto`까지 쓰면 **3.6 KB**.
+  - `-Oz` 전체 드라이버 **5.4 KB**, easy API만 쓸 때(`--gc-sections`) 5.0 KB, `-flto`까지 쓰면 **3.6 KB**.
   - 모델명 문자열 제거 + 중복 경로 통합(Boot/Init·Protect/Unprotect·칩 소거)으로 감축. 나눗셈은 가독성을 위해 그대로 사용합니다(프로젝트의 다른 코드가 이미 libgcc 나눗셈기를 링크).
   - 모델 정보는 ROM(`.rodata`) 상주, SRAM은 가벼운 핸들 1개만 사용. 동적 메모리 할당(`malloc`) 완전 배제.
 - **다양한 읽기 단위 지원 (Read Access Units - Byte / Halfword / Word)**:
@@ -103,7 +103,7 @@ void app_start(void)
 ├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
 ├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
 ├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (26 suites)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (28 suites)
 ```
 
 ---
@@ -123,7 +123,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (26 suites):
+### 테스트 통과 항목 (28 suites):
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -150,6 +150,8 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 24. **Per-Model Dummy Config (SW-013 DUMMY)**: 7종 모델별 dummy_last/dummy_value 검증 — Winbond 0xFF(Fxh), MX/GD 0x00, mode_byte 0x00
 25. **Buffered One-Frame Transfer (SW-016)**: 읽기 1프레임(tx_len=cmd+addr+dummy, rx_len=데이터), Fast Read 더미 헤더 포함, 페이지 프로그램 데이터 페이즈 동일 프레임, SPI/SFC 공용 지오메트리(정렬·오버플로) 일치, 실하드웨어 SFC 경로에서 DMA 버퍼/CRC_RES 무변경
 26. **NO_CONNECT Data-Path Gate (SW-018)**: 동작하던 칩이 사라진 뒤 재초기화로 NO_CONNECT가 되면 Read/Write/Erase/Protect가 모두 `FLASH_ERR_NO_CONNECT`로 거부되고 **SPI 프레임 0개** (버스에 아무것도 나가지 않음)
+27. **GD Coupled Status Write (SW-019)**: GD25LQ64E는 `01h`가 고정 16비트 명령 — SR1을 바꾸는 모든 경로가 SR2를 읽어 그대로 되돌려 보내는 3바이트 프레임을 쓰고, 쓰기 후 SR1·SR2를 **둘 다 read-back 검증**. QE가 조용히 꺼지지 않음
+28. **BP4 vs QE Shared Bit (SW-019)**: GD25LQ64E의 S6=BP4(다섯 번째 보호 비트)를 `Flash_Protect(0x10)`으로 설정/해제하고, MX25L 계열에서는 같은 비트(QE)를 **건드리지 않음**
 
 ---
 
@@ -165,7 +167,48 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 | `UNINIT` | `FLASH_ERR_PARAM` | 초기화 미수행 |
 
 > `info != NULL`만 검사하면 **부족합니다**: 한 번 초기화에 성공한 뒤 칩이 사라지면 핸들에는 이전 모델이 남아 있어, 예전 코드는 죽은 버스로 명령을 내보내고 0xFF를 정상 데이터처럼 돌려줬습니다. 이제는 상태를 먼저 확인하고 즉시 거부합니다.
-> 저수준 함수(`Flash_BasicRead`, `Flash_Reset`, 상태 폴링)는 초기화 과정에서도 필요하므로 게이트를 적용하지 않습니다.
+> 저수준 함수(`Flash_BasicRead`, `Flash_Reset`, 상태 폴링)는 초기화 과정에도 필요하므로 게이트를 적용하지 않습니다.
+
+---
+
+## 🔐 상태 레지스터 결합 쓰기 (SW-019)
+
+GD25LQ64E에는 **`31h`(SR2 단독 쓰기)가 없습니다.** SR2에 닿는 유일한 명령이 `01h`이고, 이 명령은
+**항상 16비트 고정**입니다 — 첫 데이터 바이트가 SR1, 두 번째가 SR2입니다.
+
+데이터시트 7.4의 경고:
+
+> *"If CS# is driven high after the eighth bit of the data byte, the QE and CMP bits will be cleared to 0."*
+
+즉 **1바이트로 `01h`를 보내면 SR1은 써지지만 QE가 꺼집니다.** 이때 소프트웨어는 아무 오류도 못 봅니다
+(핸들의 `qe_enabled`는 `true`로 남아 있고, 다음 quad 읽기부터 쓰레기 데이터가 나옵니다).
+`Flash_Protect()`를 한 번 호출하거나, BP가 걸린 부품에 `Flash_Write()`를 하면 그 순간 발생합니다
+(공장 기본값 BP=0에서는 "변경 없음"으로 조기 반환되어 쓰기가 일어나지 않으므로 증상이 숨습니다).
+
+수정 후 동작:
+
+| 호출 | 실제 전송 | 비고 |
+|------|-----------|------|
+| `Flash_WriteStatus(1, v)` | `01h + v + (읽은 SR2)` | SR1만 교체, QE는 그대로 반영 |
+| `Flash_WriteStatus(2, v)` | `01h + (읽은 SR1) + v` | 기존 동작 유지 |
+| `Flash_WriteStatus(3, v)` | 없음 → `FLASH_ERR_UNSUPPORTED` | 이 부품에 `11h` 없음 |
+
+쓰기 후에는 **SR1과 SR2를 둘 다 다시 읽어** 쓰기 가능 비트(SR1 `0xFC`, SR2 `0x7B`)를 비교합니다.
+한 바이트라도 어긋나면 `FLASH_ERR_WRITE_FAIL`입니다 — 조용히 넘어가지 않습니다.
+
+### S6은 부품마다 의미가 다릅니다
+
+| 부품 | SR1 bit6 | 처리 |
+|------|----------|------|
+| GD25LQ64E | **BP4** (다섯 번째 블록 보호 비트) | `FLASH_FEAT_BP4` — `Flash_Protect(0x10)`로 설정, `Flash_Unprotect()`로 해제 |
+| MX25L 계열 | **QE** (Quad Enable) | 플래그 없음 — Protect/Unprotect가 절대 건드리지 않음 |
+
+플래그 없이 비트6을 마스크에 넣으면 MX 계열에서 quad 모드가 죽고, 반대로 BP4를 무시하면
+`Flash_Unprotect()`가 성공을 반환했는데도 쓰기가 막히는 무음 실패가 됩니다.
+
+> 비용: ROM **+226 B** (`-Oz` 5,294 → 5,520 B). 테스트 2개 추가로 28 suites.
+> 시뮬레이터도 실제 실리콘처럼 "8비트에서 CS 상승 → QE/CMP 클리어"를 모사하도록 고쳤기 때문에,
+> 수정 전 코드에서는 TEST 27/28이 실제로 실패합니다.
 
 ---
 
@@ -184,12 +227,17 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 
 측정 (Cortex-M0 Thumb, lld, libgcc 제외):
 
-| 빌드 | 이전 | 이후 |
+| 빌드 | 현재 (SW-019) | 직전 (SW-017) |
 |------|------|------|
-| 전체 함수 유지 (`-Os`) | 5,860 B | **5,612 B** |
-| 전체 함수 유지 (`-Oz`) | 5,558 B | **5,294 B** |
-| easy API만 + `--gc-sections` (`-Oz`) | 5,074 B | **4,954 B** |
-| 위 + `-flto` | — | **3,616 B** |
+| 전체 함수 유지 (`-Os`) | **5,882 B** | 5,612 B |
+| 전체 함수 유지 (`-Oz`) | **5,520 B** | 5,294 B |
+| easy API만 + `--gc-sections` (`-Oz`) | **5,160 B** | 4,954 B |
+| 위 + `-flto` | **3,680 B** | 3,616 B |
+
+> SW-018(상태 게이트, +90 B)과 SW-019(결합 쓰기 + 검증, +226 B)는 **정확성 비용**입니다.
+> 숫자만 보면 SW-017 시점이 가장 작지만, 그 버전은 칩이 사라져도 0xFF를 정상 데이터로 돌려주고,
+> SR1을 한 번 바꾸면 QE가 조용히 꺼지는 상태였습니다. 네 가지 빌드 모두 같은 진입 심볼 목록
+> (`Flash_BootInit` + easy API 4종)으로 측정했습니다.
 
 크기 우선 빌드:
 
@@ -199,7 +247,7 @@ clang --target=arm-none-eabi -mcpu=cortex-m0 -mthumb \
 # 링크 단계에서 -Wl,--gc-sections 추가
 ```
 
-> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(25/25 테스트 통과).  
+> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(28/28 테스트 통과).  
 > 더 줄이려면 기능을 줄이는 선택이 필요합니다: CRC 알고리즘 고정(−170 B) · `flash_easy` 제외(−296 B) · 지원 모델 축소(모델당 −92 B).
 
 ### 읽기 모드와 QPI

@@ -197,7 +197,8 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .addr_bytes   = 3U,
         .qe_reg       = 2U,
         .qe_bit       = 1U,
-.features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE | FLASH_FEAT_VSR_WREN,
+        .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE |
+                        FLASH_FEAT_VSR_WREN | FLASH_FEAT_BP4,
         .die_count    = 1U,
         .die_size     = 0U,
         .read_cfg     = {

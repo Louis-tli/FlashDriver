@@ -52,6 +52,11 @@ typedef struct
      * set (06h) or a 50h is pending. */
     bool     vsr_wren_pending;
     bool     wrsr_accepted;
+
+    /* SW-019: byte count of the last 01h (WRSR) frame, so a test can prove the
+     * driver always sends the full 16-bit form (opcode + SR1 + SR2) on parts
+     * that cannot address SR2 on its own. */
+    uint32_t wrsr1_frame_bytes;
 } MOCK_SPI_STATE;
 
 static MOCK_SPI_STATE s_mock;
@@ -319,6 +324,22 @@ void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
     if (xfer->rx_buf != NULL) {
         for (uint32_t i = 0U; i < xfer->rx_len; i++) {
             xfer->rx_buf[i] = Flash_SPI_TransferByte(0xFFU);
+        }
+    }
+
+    /* ---------------------------------------------------------------------
+     * SW-019 mock fidelity: GD25LQ64E WRSR is a FIXED 16-bit command.
+     * Datasheet 7.4 - "If CS# is driven high after eighth bit of the data
+     * byte, the command is not executed" in QSPI, but in SPI mode the write
+     * IS executed and "the QE and CMP bits will be cleared to 0".
+     * The earlier mock only wrote SR1 and left QE alone, which is exactly why
+     * the one-byte SR1 update looked harmless in the test suite while a real
+     * part would silently drop out of quad mode. Model the silicon here.
+     * ------------------------------------------------------------------- */
+    if ((xfer->tx_buf != NULL) && (xfer->tx_buf[0] == F_CMD_WRSR1)) {
+        s_mock.wrsr1_frame_bytes = xfer->tx_len;
+        if ((xfer->tx_len == 2U) && (s_mock.mock_jedec_id == 0xC86017U)) {  /* GD25LQ64E */
+            s_mock.sr2[s_mock.current_die] &= (uint8_t)~0x42U;   /* clear QE (S9) + CMP (S14) */
         }
     }
 
@@ -1247,6 +1268,91 @@ static void Test_NoConnectRefusesDataPath(void)
            s_xfer.frames);
 }
 
+/* SW-019: GD25LQ64E는 01h가 "고정 16비트" 명령이다. 8비트에서 CS를 올리면
+ * SR1은 써지지만 QE/CMP가 0으로 클리어된다(데이터시트 7.4). 따라서 SR1을
+ * 바꾸는 모든 경로(Protect/Unprotect/Write 내부 Unprotect)는 반드시
+ * "SR2를 읽어 그대로 되돌려 보내는 3바이트 프레임"이어야 한다. */
+static void Test_GdCoupledWriteKeepsQe(void)
+{
+    uint8_t data[8];
+
+    printf("[TEST 27] SW-019: GD 16-bit WRSR keeps QE alive on SR1 changes...\n");
+
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+
+    int status = Flash_Init();
+    assert(status == FLASH_OK);
+    assert((s_mock.sr2[0] & FLASH_SR2_QE_WINBOND) != 0U);   /* Init이 QE를 켠다 */
+
+    /* (1) BP0 설정 - SR1이 바뀌어도 QE는 살아 있어야 한다. */
+    status = Flash_Protect(0x01U);
+    assert(status == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x3CU) == 0x04U);                        /* BP0만 set */
+    assert((s_mock.sr2[0] & FLASH_SR2_QE_WINBOND) != 0U);            /* QE 유지 */
+    assert(s_mock.wrsr1_frame_bytes == 3U);                          /* opcode+SR1+SR2 */
+
+    /* (2) 실제 쓰기 경로 - Flash_Write는 페이지마다 Unprotect를 부른다.
+     *     여기서 QE가 꺼지면 이후 quad 읽기가 전부 쓰레기가 된다. */
+    memset(data, 0x5AU, sizeof(data));
+    s_mock.page_program_count = 0U;
+    status = Flash_Write(0x00000000U, data, sizeof(data), FLASH_PROGRAM_SINGLE);
+    assert(status == FLASH_OK);
+    assert(s_mock.page_program_count >= 1U);
+    assert((s_mock.sr2[0] & FLASH_SR2_QE_WINBOND) != 0U);            /* QE 유지 */
+    assert(g_flash_handle.qe_enabled);                               /* 핸들도 일치 */
+
+    /* (3) Unprotect도 같은 프레임을 써야 한다. */
+    status = Flash_Unprotect();
+    assert(status == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);
+    assert((s_mock.sr2[0] & FLASH_SR2_QE_WINBOND) != 0U);
+    assert(s_mock.wrsr1_frame_bytes == 3U);
+
+    /* (4) 이 부품에는 11h(SR3 단독 쓰기)가 없다 - 무음 처리하지 않고 거부. */
+    assert(Flash_WriteStatus(3U, 0x00U) == FLASH_ERR_UNSUPPORTED);
+
+    printf("  - SR1 changed, QE survived, every 01h frame was 3 bytes. PASSED.\n\n");
+}
+
+/* SW-019: GD25LQ64E SR1의 S6은 BP4(다섯 번째 블록 보호 비트)다.
+ * MX25L 계열에서 같은 비트는 QE이므로, 모델 플래그 없이 지우면 quad 모드가
+ * 죽는다. 두 부품을 나란히 검증한다. */
+static void Test_Bp4VersusQeBit(void)
+{
+    printf("[TEST 28] SW-019: S6 = BP4 on GD, but QE on Macronix...\n");
+
+    /* (1) GD25LQ64E - BP4가 걸린 부품을 Unprotect하면 실제로 풀려야 한다. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;
+    Mock_SetStatus(0x40U, 0x00U, 0x00U);                    /* BP4=1, 전체 보호 */
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_Unprotect() == FLASH_OK);
+    assert((s_mock.sr1[0] & FLASH_SR1_BP4) == 0U);          /* BP4 해제됨 */
+    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);
+
+    assert(Flash_Protect(0x10U) == FLASH_OK);               /* mask bit4 -> BP4 */
+    assert((s_mock.sr1[0] & FLASH_SR1_BP4) != 0U);
+
+    /* (2) MX25L512 - 같은 비트가 QE다. Protect/Unprotect가 건드리면 안 된다. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC22010U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert((s_mock.sr1[0] & FLASH_SR1_QE_MX25L) != 0U);     /* Init이 QE(S6)를 켠다 */
+
+    assert(Flash_Protect(0x0FU) == FLASH_OK);
+    assert((s_mock.sr1[0] & FLASH_SR1_QE_MX25L) != 0U);     /* QE 유지 */
+    assert((s_mock.sr1[0] & 0x3CU) == 0x3CU);               /* BP는 설정됨 */
+
+    assert(Flash_Unprotect() == FLASH_OK);
+    assert((s_mock.sr1[0] & FLASH_SR1_QE_MX25L) != 0U);     /* QE 여전히 유지 */
+    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);
+
+    printf("  - BP4 clears on GD and S6=QE survives on Macronix. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1281,9 +1387,11 @@ int main(void)
     Test_DummyCfgPerModel();
     Test_BufferedXferAndSharedGeometry();
     Test_NoConnectRefusesDataPath();
+    Test_GdCoupledWriteKeepsQe();
+    Test_Bp4VersusQeBit();
 
     printf("================================================================\n");
-    printf(" ALL 26 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 28 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;
