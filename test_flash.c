@@ -12,6 +12,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <stddef.h>     /* offsetof — SW-021 addresses the crc field by offset */
 #include "flash.h"
 #include "flash_table.h"
 #include "flash_spi.h"
@@ -67,6 +68,10 @@ typedef struct
     /* SW-020: the device silently drops the next WRSR (a rejected write).
      * Nothing on the wire indicates it, so only a read-back can notice. */
     bool     drop_next_wrsr;
+
+    /* SW-021: the last SPI clock the driver asked for, so a test can prove the
+     * boot settings block really drives the bus speed. */
+    uint32_t spi_speed_hz;
 } MOCK_SPI_STATE;
 
 static MOCK_SPI_STATE s_mock;
@@ -118,7 +123,8 @@ static void Mock_SetStatus(uint8_t sr1, uint8_t sr2, uint8_t sr3)
 }
 
 /* Build a valid boot settings block and install it as the readable config. */
-static void Mock_SetBootConfig(uint32_t jedec_expect, uint16_t sfc_page, uint32_t features)
+static void Mock_SetBootConfigHz(uint32_t jedec_expect, uint16_t sfc_page,
+                                 uint32_t features, uint32_t spi_hz)
 {
     FLASH_BOOT_CONFIG cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -128,9 +134,18 @@ static void Mock_SetBootConfig(uint32_t jedec_expect, uint16_t sfc_page, uint32_
     cfg.features     = features;
     cfg.sfc_page_size = sfc_page;
     cfg.addr_mode    = (uint8_t)FLASH_ADDR_MODE_DEFAULT;
+    cfg.spi_hz       = spi_hz;                          /* SW-021 */
     cfg.crc          = Flash_ConfigCrc(&cfg);
     memcpy(s_mock.config_buf, &cfg, sizeof(cfg));
     s_mock.config_len = (uint32_t)sizeof(cfg);
+}
+
+/* Tests written before SW-021 have no clock in their block. 0xFFFFFFFF is what
+ * follows a 24-byte block on erased Flash, so this is the honest "field absent"
+ * case: the driver must still boot, just keep the 10 MHz bring-up clock. */
+static void Mock_SetBootConfig(uint32_t jedec_expect, uint16_t sfc_page, uint32_t features)
+{
+    Mock_SetBootConfigHz(jedec_expect, sfc_page, features, 0xFFFFFFFFU);
 }
 
 /* Override weak SPI functions for test verification */
@@ -144,7 +159,7 @@ void Flash_SPI_Init(void)
 
 void Flash_SPI_SetSpeed(uint32_t speed_hz)
 {
-    (void)speed_hz;
+    s_mock.spi_speed_hz = speed_hz;     /* SW-021: recorded, not discarded */
 }
 
 void Flash_SPI_CS_Low(void)
@@ -635,7 +650,10 @@ static void Test_BootFamilyMatch(void)
     s_mock.mock_jedec_id = 0xEF4019U;
     Mock_SetStatus(0x00U, 0x02U, 0x00U);
     Mock_SetBootConfig(0xEF4019U, 4096U, FLASH_FEAT_QUAD);
-    s_mock.config_buf[s_mock.config_len - 1U] ^= 0xFFU; /* flip CRC byte */
+    /* SW-021: crc is no longer the last field of the block (spi_hz was appended
+     * after it), so address it by offset. "Last byte" would now flip the clock
+     * field, which is deliberately outside the checksum window. */
+    s_mock.config_buf[offsetof(FLASH_BOOT_CONFIG, crc)] ^= 0xFFU;
     status = Flash_BootInit(0x00000000U);
     assert(status == FLASH_ERR_PARAM);
     assert(Flash_GetState() == FLASH_STATE_ERROR);
@@ -1430,6 +1448,55 @@ static void Test_BusyGateAndStatusReadBack(void)
     printf("  - Waited out BUSY, then proved the dropped WRSR. PASSED.\n\n");
 }
 
+/* ---------------------------------------------------------------------------
+ * [TEST 30] SW-021: the boot settings block carries the SPI clock
+ *
+ * The clock is not a compile-time constant any more: it travels in the block
+ * that Flash_BasicRead() fetches at 10 MHz, and only reaches the bus once that
+ * block has passed magic + checksum + family checks. The interesting part is
+ * the compatibility valve - an older 24-byte block has no clock field at all,
+ * and that must not turn into a failed boot.
+ * ------------------------------------------------------------------------- */
+static void Test_BootConfigCarriesSpiClock(void)
+{
+    printf("[TEST 30] SW-021: boot settings block carries the SPI clock...\n");
+
+    /* (1) Block that asks for a real clock: the bus ends up on exactly that. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;                 /* W25Q64 present */
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    Mock_SetBootConfigHz(0xEF4019U, 4096U, FLASH_FEAT_QUAD, 24000000U);
+    assert(Flash_BootInit(0x00000000U) == FLASH_OK);
+    assert(s_mock.spi_speed_hz == 24000000U);
+
+    /* (2) Old 24-byte block: the 4 bytes after crc read back as 0xFF on erased
+     *     Flash. The block must still validate, the boot must still succeed,
+     *     and the driver must keep the safe 10 MHz bring-up clock. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    Mock_SetBootConfigHz(0xEF4019U, 4096U, FLASH_FEAT_QUAD, 0xFFFFFFFFU);
+    assert(Flash_BootInit(0x00000000U) == FLASH_OK);
+    assert(s_mock.spi_speed_hz == 10000000U);         /* unchanged */
+
+    /* (3) Absurd value (e.g. a bit flip that stays a plausible u32): same valve.
+     *     Nothing on a Flash part runs at 200 MHz, so it is ignored, not trusted. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    Mock_SetBootConfigHz(0xEF4019U, 4096U, FLASH_FEAT_QUAD, 200000000U);
+    assert(Flash_BootInit(0x00000000U) == FLASH_OK);
+    assert(s_mock.spi_speed_hz == 10000000U);
+
+    /* (4) The field is outside the checksum window on purpose (append-only kept
+     *     old blocks valid). Prove that a garbage clock does NOT masquerade as a
+     *     broken block: the handle still comes up READY. */
+    assert(Flash_GetState() == FLASH_STATE_READY);
+    assert(Flash_IsLocked() == true);
+
+    printf("  - 24 MHz applied; absent/absurd values keep 10 MHz and still boot. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1467,9 +1534,10 @@ int main(void)
     Test_GdCoupledWriteKeepsQe();
     Test_Bp4VersusQeBit();
     Test_BusyGateAndStatusReadBack();
+    Test_BootConfigCarriesSpiClock();
 
     printf("================================================================\n");
-    printf(" ALL 29 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 30 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

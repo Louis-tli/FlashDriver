@@ -103,7 +103,7 @@ void app_start(void)
 ├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
 ├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
 ├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (29 suites)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (30 suites)
 ```
 
 ---
@@ -123,7 +123,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (29 suites):
+### 테스트 통과 항목 (30 suites):
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -153,6 +153,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 27. **GD Coupled Status Write (SW-019)**: GD25LQ64E는 `01h`가 고정 16비트 명령 — SR1을 바꾸는 모든 경로가 SR2를 읽어 그대로 되돌려 보내는 3바이트 프레임을 쓰고, 쓰기 후 SR1·SR2를 **둘 다 read-back 검증**. QE가 조용히 꺼지지 않음
 28. **BP4 vs QE Shared Bit (SW-019)**: GD25LQ64E의 S6=BP4(다섯 번째 보호 비트)를 `Flash_Protect(0x10)`으로 설정/해제하고, MX25L 계열에서는 같은 비트(QE)를 **건드리지 않음**
 29. **BUSY Gate + WRSR Read-Back (SW-020)**: WEL=1·BUSY=1이 동시에 보이는 구간에서 `Flash_WriteEnable()`이 기다렸다가 성공하는지, 그리고 조용히 사라진 WRSR을 read-back이 `FLASH_ERR_WRITE_FAIL`로 잡는지
+30. **부팅 클럭은 설정 블록이 정한다 (SW-021)**: `spi_hz`=24 MHz면 정확히 그 값으로 상승, 24 B 구 블록(0xFFFF_FFFF)이나 200 MHz 같은 비정상 값이면 **10 MHz 유지 + 정상 부팅**
 
 ---
 
@@ -244,6 +245,34 @@ GD25LQ64E에는 **`31h`(SR2 단독 쓰기)가 없습니다.** SR2에 닿는 유�
 
 ---
 
+## ⏱ 부팅 클럭은 설정 블록에서 온다 (SW-021)
+
+`Flash_BootInitOpt()`는 지금까지 10 MHz로 부팅하고 **그대로** 남았습니다. 50 MHz로 올리는 단계는 `Flash_InitOpt()`에만 있었기 때문에, 부팅 경로를 쓰는 제품은 런타임 내내 5배 느린 버스로 동작했습니다.
+
+이제 클럭은 **플래시에서 읽은 설정 블록의 값**입니다. `Flash_BasicRead()`가 28 B 블록을 그대로 받아오고, magic·체크섬·패밀리 검증을 모두 통과한 뒤에야 버스를 올립니다.
+
+| 시점 | 버스 | 이유 |
+|------|------|------|
+| 프로브 · 설정 블록 읽기 · QE/4바이트 모드 변경 | 10 MHz | 아직 무엇이 꽂혔는지 모르는 구간 |
+| 설정 검증 완료 후 | `cfg.spi_hz` | 보드와 부품을 이제 신뢰할 수 있음 |
+
+### 하위 호환 — 24 B 블록만 써 둔 보드도 그대로 부팅
+
+`spi_hz`를 `crc` **뒤에** 덧붙였습니다. 그래서
+
+- 기존 필드 오프셋(magic 0, jedec 4, model 8, features 12, sfc_page_size 16, addr_mode 18, crc_algo 19, crc 20)이 전부 그대로이고,
+- `Flash_ConfigCrc()`는 `offsetof(crc)`까지만 더하므로 체크섬 구간도 **정확히 20 B 그대로**입니다.
+
+24 B 블록만 써 둔 기존 보드는 그 뒤 4 B가 지워진 플래시(0xFFFF_FFFF)로 읽혀 허용 범위(1~50 MHz)를 벗어나고, 드라이버는 **10 MHz를 유지한 채 정상 부팅**합니다. 필드가 없다고 부팅을 실패시키지 않습니다.
+
+> 필드가 체크섬 밖에 있는 대신 값 자체를 범위로 검증합니다(1~50 MHz). 손상된 값이 그 범위에 우연히 들어오면 클럭만 기본값(10 MHz)으로 남고, 데이터 무결성은 영향받지 않습니다.
+> `FLASH_BOOT_CONFIG`가 28 B에서 벗어나면 컴파일이 실패하도록 `typedef char[... == 28]` 가드를 넣었습니다 — 양산 도구가 이미 써 둔 블록 크기가 조용히 바뀌는 일을 막습니다.
+
+> 비용: ROM **+24 B** (`-Os`, `-Oz` 동일), easy API만 링크하는 `--gc-sections` 구성에서는 **+0 B**(이 경로에 `Flash_BootInit`이 링크되지 않음).
+> 테스트 1개 추가로 **30 suites**. 수정 전 코드에서는 TEST 30이 **line 1470**에서 실패합니다.
+
+---
+
 ## 📦 코드 크기 (ROM) — SW-017
 
 원칙은 **사람이 읽고 고치기 쉬운 코드**입니다. 크기는 구조를 꼬지 않고 줄일 수 있는 곳에서만 줄였습니다.
@@ -259,17 +288,19 @@ GD25LQ64E에는 **`31h`(SR2 단독 쓰기)가 없습니다.** SR2에 닿는 유�
 
 측정 (Cortex-M0 Thumb, lld, libgcc 제외):
 
-| 빌드 | 현재 (SW-019) | 직전 (SW-017) |
+| 빌드 | SW-019 기준 (표 기준값) | 직전 (SW-017) |
 |------|------|------|
 | 전체 함수 유지 (`-Os`) | **5,882 B** | 5,612 B |
 | 전체 함수 유지 (`-Oz`) | **5,520 B** | 5,294 B |
 | easy API만 + `--gc-sections` (`-Oz`) | **5,160 B** | 4,954 B |
 | 위 + `-flto` | **3,680 B** | 3,616 B |
 
-> SW-018(상태 게이트, +90 B)과 SW-019(결합 쓰기 + 검증, +226 B), SW-020(BUSY 게이트 + WRSR read-back, `-Oz` +88 B)는 **정확성 비용**입니다.
+> SW-018(상태 게이트, +90 B)과 SW-019(결합 쓰기 + 검증, +226 B), SW-020(BUSY 게이트 + WRSR read-back, `-Oz` +88 B), SW-021(부팅 클럭 필드, +24 B)는 **정확성 비용**입니다.
 > 숫자만 보면 SW-017 시점이 가장 작지만, 그 버전은 칩이 사라져도 0xFF를 정상 데이터로 돌려주고,
 > SR1을 한 번 바꾸면 QE가 조용히 꺼지는 상태였습니다. 네 가지 빌드 모두 같은 진입 심볼 목록
 > (`Flash_BootInit` + easy API 4종)으로 측정했습니다.
+> 표의 절대값은 SW-019 시점 실측이고, SW-020(+88 B)·SW-021(+24 B)는 **같은 툴체인으로 이전/현재를 A/B 링크해 잰 증분**입니다.
+> 그래서 지금 `-Oz` 전체 유지 빌드는 대략 **5,632 B**(5,520 + 88 + 24)로 보면 됩니다.
 
 크기 우선 빌드:
 
@@ -279,7 +310,7 @@ clang --target=arm-none-eabi -mcpu=cortex-m0 -mthumb \
 # 링크 단계에서 -Wl,--gc-sections 추가
 ```
 
-> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(29/29 테스트 통과).  
+> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(30/30 테스트 통과).  
 > 더 줄이려면 기능을 줄이는 선택이 필요합니다: CRC 알고리즘 고정(−170 B) · `flash_easy` 제외(−296 B) · 지원 모델 축소(모델당 −92 B).
 
 ### 읽기 모드와 QPI

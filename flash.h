@@ -245,6 +245,26 @@ typedef enum
  ******************************************************************************/
 #define FLASH_BOOT_CFG_MAGIC            (0x46424F54UL)  /* "FBOT" */
 
+/* SW-021: SPI clock carried inside the boot settings block.
+ *
+ * The 24-byte block has no room for a clock field, so spi_hz is appended AFTER
+ * crc. Two consequences, both intended:
+ *
+ *   1. Every existing field keeps its offset (magic 0, jedec 4, model 8,
+ *      features 12, sfc_page_size 16, addr_mode 18, crc_algo 19, crc 20), and
+ *      Flash_ConfigCrc() still sums exactly the first 20 bytes, so a settings
+ *      block written by an older firmware still validates byte for byte.
+ *
+ *   2. The speed window below doubles as the compatibility valve. An old block
+ *      has no spi_hz field at all: those 4 bytes read back as 0xFF (erased) or
+ *      0x00, both outside the window, and the driver simply keeps its safe
+ *      10 MHz bring-up clock instead of failing the boot.
+ *
+ * The upper bound is the same 50 MHz that Flash_InitOpt() uses as its normal
+ * operational clock, so both init paths behave identically. */
+#define FLASH_BOOT_SPI_HZ_MIN           (1000000UL)     /* 1 MHz  */
+#define FLASH_BOOT_SPI_HZ_MAX           (50000000UL)    /* 50 MHz */
+
 typedef struct
 {
     uint32_t magic;             /* FLASH_BOOT_CFG_MAGIC */
@@ -254,8 +274,15 @@ typedef struct
     uint16_t sfc_page_size;     /* SFC transfer page size: 2048 or 4096 */
     uint8_t  addr_mode;         /* FLASH_ADDR_MODE (0 = default from table) */
     uint8_t  crc_algo;          /* FLASH_CRC_ALGO (CRC/checksum selection) */
-    uint32_t crc;               /* Checksum of the fields above */
+    uint32_t crc;               /* Checksum of the fields above (first 20 bytes) */
+    uint32_t spi_hz;            /* SW-021: SPI clock applied after boot; 0/unset = keep 10 MHz */
 } FLASH_BOOT_CONFIG;
+
+/* Compile-time guard: the block is provisioned into Flash by production tools,
+ * so its size must never drift silently. If a field is added or removed, this
+ * line fails to compile and forces a deliberate decision about old blocks. */
+typedef char flash_boot_config_size_must_be_28[
+    (sizeof(FLASH_BOOT_CONFIG) == 28U) ? 1 : -1];
 
 /******************************************************************************
  * Addressing Mode (SW-013: boot-config selectable) — req 2

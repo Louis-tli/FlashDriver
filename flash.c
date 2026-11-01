@@ -17,6 +17,8 @@
 #include "flash_delay.h"
 #include "flash_xfer.h"
 
+#include <stddef.h>     /* offsetof — SW-021 keeps the config checksum window fixed */
+
 /******************************************************************************
  * Global Runtime Handle Instance (Allocated in SRAM)
  ******************************************************************************/
@@ -199,7 +201,10 @@ uint32_t Flash_ConfigCrc(const FLASH_BOOT_CONFIG *cfg)
     }
 
     const uint8_t *p = (const uint8_t *)cfg;
-    const uint32_t n = (uint32_t)(sizeof(FLASH_BOOT_CONFIG) - sizeof(uint32_t));
+    /* SW-021: the checksum window ends where crc begins, never at "sizeof - 4".
+     * spi_hz was appended after crc, so this keeps the window at exactly the
+     * original 20 bytes and a block written by older firmware still validates. */
+    const uint32_t n = (uint32_t)offsetof(FLASH_BOOT_CONFIG, crc);
     uint32_t sum = 0x5A5A5A5AU;
     for (uint32_t i = 0U; i < n; i++) {
         sum += (uint32_t)p[i];
@@ -388,7 +393,22 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         return status;
     }
 
-    /* 9. Lock the selection (immutable for the rest of the boot) */
+    /* 9. Operation clock from the settings block (SW-021).
+     *
+     *    Everything above ran at the 10 MHz bring-up clock: probing, the basic
+     *    read of this block, QE and 4-byte-mode changes. Only now, with the
+     *    block verified and the handle configured, is it safe to raise the bus.
+     *
+     *    An out-of-range value is NOT an error: it means the field is absent
+     *    (a 24-byte block written by an older firmware reads back 0xFF there).
+     *    In that case the driver keeps the safe 10 MHz clock instead of failing
+     *    a boot it has no business failing. */
+    const uint32_t spi_hz = cfg.spi_hz;
+    if ((spi_hz >= FLASH_BOOT_SPI_HZ_MIN) && (spi_hz <= FLASH_BOOT_SPI_HZ_MAX)) {
+        Flash_SPI_SetSpeed(spi_hz);
+    }
+
+    /* 10. Lock the selection (immutable for the rest of the boot) */
     g_flash_handle.locked = true;
     return FLASH_OK;
 }
