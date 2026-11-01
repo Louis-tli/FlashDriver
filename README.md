@@ -103,7 +103,7 @@ void app_start(void)
 ├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
 ├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
 ├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (28 suites)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (29 suites)
 ```
 
 ---
@@ -123,7 +123,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (28 suites):
+### 테스트 통과 항목 (29 suites):
 1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -152,6 +152,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 26. **NO_CONNECT Data-Path Gate (SW-018)**: 동작하던 칩이 사라진 뒤 재초기화로 NO_CONNECT가 되면 Read/Write/Erase/Protect가 모두 `FLASH_ERR_NO_CONNECT`로 거부되고 **SPI 프레임 0개** (버스에 아무것도 나가지 않음)
 27. **GD Coupled Status Write (SW-019)**: GD25LQ64E는 `01h`가 고정 16비트 명령 — SR1을 바꾸는 모든 경로가 SR2를 읽어 그대로 되돌려 보내는 3바이트 프레임을 쓰고, 쓰기 후 SR1·SR2를 **둘 다 read-back 검증**. QE가 조용히 꺼지지 않음
 28. **BP4 vs QE Shared Bit (SW-019)**: GD25LQ64E의 S6=BP4(다섯 번째 보호 비트)를 `Flash_Protect(0x10)`으로 설정/해제하고, MX25L 계열에서는 같은 비트(QE)를 **건드리지 않음**
+29. **BUSY Gate + WRSR Read-Back (SW-020)**: WEL=1·BUSY=1이 동시에 보이는 구간에서 `Flash_WriteEnable()`이 기다렸다가 성공하는지, 그리고 조용히 사라진 WRSR을 read-back이 `FLASH_ERR_WRITE_FAIL`로 잡는지
 
 ---
 
@@ -212,6 +213,37 @@ GD25LQ64E에는 **`31h`(SR2 단독 쓰기)가 없습니다.** SR2에 닿는 유�
 
 ---
 
+## ⏳ BUSY 게이트와 상태 레지스터 read-back (SW-020)
+
+### BUSY와 WEL은 같은 응답, 다른 보증
+
+`05h`(RDSR) 한 프레임이 S7~S0을 모두 돌려줍니다. 그중 **S0 = BUSY(WIP)**, **S1 = WEL**입니다.
+한 번의 읽기로 둘 다 볼 수 있지만, 둘이 같은 값이라는 뜻은 아닙니다.
+
+| 읽은 SR1 | 의미 | 해야 할 일 |
+|----------|------|-----------|
+| WEL=1, BUSY=0 | 래치가 걸렸고 칩이 놀고 있다 | 진행 |
+| WEL=1, BUSY=1 | 래치는 걸렸지만 아직 쓰기/소거 중 | **대기** — 이때 보낸 program은 장치가 무시 |
+| WEL=0 | WREN이 안 먹었다 | WREN 재전송 |
+
+### 무엇을 고쳤나
+
+`Flash_WriteEnable()`은 이전에 WEL만 확인하고 5회 × 10 µs(총 50 µs) 만에 포기했습니다.
+
+1. **같은 `05h` 응답에서 BUSY까지 함께 검사** — 추가 SPI 프레임은 0개입니다.
+2. **재시도 예산을 200000 × 5 µs ≈ 1초**로 확대(`Flash_WaitBusy`와 동일). 페이지 프로그램 0.4~3 ms, WRSR 15~25 ms, 섹터 소거 45 ms를 흡수합니다. 50 µs로는 어떤 실제 사이클도 기다릴 수 없었습니다.
+3. **상태 읽기 자체가 실패하면 즉시 반환** — 칩이 없을 때 1초를 버리지 않습니다.
+4. **표준 WRSR 경로에 사전 BUSY 검사 + 쓰기 후 read-back** — 이전에는 `Flash_WriteStatus(1/2, v)`가 프레임을 보내고 BUSY만 기다린 뒤 무조건 `FLASH_OK`를 반환했습니다. 이제 SR1(`0xFC`)·SR2(`0x7B`) 쓰기 가능 비트를 다시 읽어 비교하고, 어긋나면 `FLASH_ERR_WRITE_FAIL`입니다.
+
+정상 경로 비용은 늘지 않습니다: WREN 1회 + RDSR 1회는 이전과 같고, WRSR 경로만 확인용 읽기 1회가 늘어납니다. 실제로 기다리는 것은 BUSY일 때뿐입니다.
+
+> 비용: ROM **+88 B**(`-Oz`), **+76 B**(`-Os`) — 같은 툴체인·같은 플래그로 수정 전/후를 각각 링크해 비교한 값입니다.
+> 테스트 1개 추가로 **29 suites**. 시뮬레이터는 WIP=1 구간에서 WREN을 무시하고 SR1에 BUSY를 세우며,
+> 장치가 WRSR을 조용히 버리는 경우까지 모사합니다.
+> 수정 전 코드에서는 TEST 29가 **line 1400**(BUSY를 보지 않음)과 **line 1394**(read-back 없음)에서 각각 실패합니다.
+
+---
+
 ## 📦 코드 크기 (ROM) — SW-017
 
 원칙은 **사람이 읽고 고치기 쉬운 코드**입니다. 크기는 구조를 꼬지 않고 줄일 수 있는 곳에서만 줄였습니다.
@@ -234,7 +266,7 @@ GD25LQ64E에는 **`31h`(SR2 단독 쓰기)가 없습니다.** SR2에 닿는 유�
 | easy API만 + `--gc-sections` (`-Oz`) | **5,160 B** | 4,954 B |
 | 위 + `-flto` | **3,680 B** | 3,616 B |
 
-> SW-018(상태 게이트, +90 B)과 SW-019(결합 쓰기 + 검증, +226 B)는 **정확성 비용**입니다.
+> SW-018(상태 게이트, +90 B)과 SW-019(결합 쓰기 + 검증, +226 B), SW-020(BUSY 게이트 + WRSR read-back, `-Oz` +88 B)는 **정확성 비용**입니다.
 > 숫자만 보면 SW-017 시점이 가장 작지만, 그 버전은 칩이 사라져도 0xFF를 정상 데이터로 돌려주고,
 > SR1을 한 번 바꾸면 QE가 조용히 꺼지는 상태였습니다. 네 가지 빌드 모두 같은 진입 심볼 목록
 > (`Flash_BootInit` + easy API 4종)으로 측정했습니다.
@@ -247,7 +279,7 @@ clang --target=arm-none-eabi -mcpu=cortex-m0 -mthumb \
 # 링크 단계에서 -Wl,--gc-sections 추가
 ```
 
-> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(28/28 테스트 통과).  
+> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(29/29 테스트 통과).  
 > 더 줄이려면 기능을 줄이는 선택이 필요합니다: CRC 알고리즘 고정(−170 B) · `flash_easy` 제외(−296 B) · 지원 모델 축소(모델당 −92 B).
 
 ### 읽기 모드와 QPI

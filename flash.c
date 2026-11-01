@@ -508,16 +508,32 @@ int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val)
  ******************************************************************************/
 int Flash_WriteEnable(void)
 {
-    for (uint32_t retry = 0U; retry < 5U; retry++) {
+    /* WEL (S1) and BUSY (S0) are two bits of the SAME 05h response, so one
+     * status read decides both and nothing extra goes on the wire (SW-020).
+     *
+     * Why BUSY has to be part of the test:
+     *   WEL only says "the latch is armed". A WREN that lands while a
+     *   program/erase cycle is still running leaves WEL=1 and WIP=1 set at
+     *   the same time. Returning OK there makes the caller's next program
+     *   command get dropped by the device - and the WaitBusy that follows it
+     *   only proves the PREVIOUS cycle finished, so the failure is silent and
+     *   the caller thinks the page was written.
+     *
+     * The retry budget is the same ~1 s as Flash_WaitBusy(): a page program
+     * is 0.4-3 ms, WRSR 15-25 ms, a sector erase 45 ms typical, so a short
+     * 5 x 10 us loop could never absorb a real cycle. */
+    for (uint32_t retry = 0U; retry < 200000U; retry++) {
         Flash_SPI_SendCmd(F_CMD_WREN);
 
         uint8_t sr1 = 0U;
-        if (Flash_ReadStatus(1U, &sr1) == FLASH_OK) {
-            if ((sr1 & FLASH_SR1_WEL) != 0U) {
-                return FLASH_OK;
-            }
+        const int status = Flash_ReadStatus(1U, &sr1);
+        if (status != FLASH_OK) {
+            return status;      /* dead bus: no point burning the whole budget */
         }
-        Flash_DelayUs(10U);     /* WEL poll backoff (SW-014: was 100 loops) */
+        if (((sr1 & FLASH_SR1_WEL) != 0U) && ((sr1 & FLASH_SR1_BUSY) == 0U)) {
+            return FLASH_OK;
+        }
+        Flash_DelayUs(5U);      /* same 5 us backoff as Flash_WaitBusy */
     }
 
     return FLASH_ERR_WRITE_FAIL;
@@ -679,7 +695,15 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
     }
 
     /* ---- Standard one-byte status write -------------------------------- */
-    int status = Flash_SrWriteEnable();
+    /* Idle first. Two reasons: a WRSR that arrives while WIP=1 is dropped by
+     * the device, and on parts that arm with 50h any intervening command
+     * consumes the volatile enable. */
+    int status = Flash_WaitBusy(200000U);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
+    status = Flash_SrWriteEnable();
     if (status != FLASH_OK) {
         return status;
     }
@@ -701,7 +725,31 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
     const uint8_t frame[2] = { cmd, val };   /* opcode + value, one CS frame */
     Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
 
-    return Flash_WaitBusy(200000U);
+    status = Flash_WaitBusy(200000U);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
+    /* Read back what actually landed (SW-020). Without this a rejected or
+     * truncated WRSR still returned FLASH_OK - the same class of silent
+     * failure the coupled GD path had. Only writable bits are compared:
+     * WEL/WIP on SR1 and SUS/reserved on SR2 are read-only and would make
+     * every write look like a mismatch. reg 3 (11h) has no supported part,
+     * so there is no writable mask for it. */
+    if (reg_idx != 3U) {
+        uint8_t rb = 0U;
+        status = Flash_ReadStatus(reg_idx, &rb);
+        if (status != FLASH_OK) {
+            return status;
+        }
+        const uint8_t mask = (reg_idx == 2U) ? FLASH_SR2_WRITABLE_MASK
+                                             : FLASH_SR1_WRITABLE_MASK;
+        if (((rb ^ val) & mask) != 0U) {
+            return FLASH_ERR_WRITE_FAIL;
+        }
+    }
+
+    return FLASH_OK;
 }
 
 /******************************************************************************

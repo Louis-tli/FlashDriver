@@ -57,6 +57,16 @@ typedef struct
      * driver always sends the full 16-bit form (opcode + SR1 + SR2) on parts
      * that cannot address SR2 on its own. */
     uint32_t wrsr1_frame_bytes;
+
+    /* SW-020: the device is in the middle of a self-timed cycle for the next N
+     * status reads. While it is, SR1 reports WIP(BUSY)=1 and WREN is dropped,
+     * so WEL and BUSY can legitimately be seen set at the same time - the
+     * exact window where a WEL-only check lies about being ready. */
+    uint32_t busy_reads_remaining;
+
+    /* SW-020: the device silently drops the next WRSR (a rejected write).
+     * Nothing on the wire indicates it, so only a read-back can notice. */
+    bool     drop_next_wrsr;
 } MOCK_SPI_STATE;
 
 static MOCK_SPI_STATE s_mock;
@@ -170,8 +180,12 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
         }
 
         if (tx_byte == F_CMD_WREN) {
-            s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
             s_mock.wren_count++;
+            /* SW-020: like the silicon, WREN is ignored during an embedded
+             * operation (WIP=1), so it must not set WEL then. */
+            if (s_mock.busy_reads_remaining == 0U) {
+                s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
+            }
         } else if (tx_byte == F_CMD_VSR_WREN) {
             s_mock.vsr_wren_pending = true;   /* WEL stays 0 (datasheet) */
             s_mock.vsr_wren_count++;
@@ -215,6 +229,10 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 
         case F_CMD_RDSR1: /* 05h */
             rx_byte = s_mock.sr1[s_mock.current_die];
+            if (s_mock.busy_reads_remaining > 0U) {   /* SW-020: WIP=1 window */
+                s_mock.busy_reads_remaining--;
+                rx_byte |= FLASH_SR1_BUSY;
+            }
             break;
         case F_CMD_RDSR2: /* 35h */
             rx_byte = s_mock.sr2[s_mock.current_die];
@@ -226,6 +244,11 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
         case F_CMD_WRSR1: /* 01h : 1-byte (SR1) or 2-byte (SR1+SR2) */
             if (!s_mock.wrsr_accepted) {
                 break;                      /* chip rejects: no WEL, no pending 50h */
+            }
+            if (s_mock.drop_next_wrsr) {    /* SW-020: write silently dropped */
+                s_mock.drop_next_wrsr = false;
+                s_mock.cmd_byte_index++;
+                break;
             }
             if (s_mock.cmd_byte_index == 1U) {
                 s_mock.sr1[s_mock.current_die] = tx_byte;
@@ -1353,6 +1376,60 @@ static void Test_Bp4VersusQeBit(void)
     printf("  - BP4 clears on GD and S6=QE survives on Macronix. PASSED.\n\n");
 }
 
+/* SW-020: WEL(S1)과 BUSY(S0)는 같은 05h 응답의 서로 다른 비트다.
+ * WEL만 보고 돌아가면 칩이 아직 쓰기 중일 때도 "준비됨"으로 판정하고,
+ * 뒤따르는 program 명령은 조용히 사라진다. 또한 상태 레지스터 쓰기는
+ * read-back으로 실제 반영 여부를 확인해야 한다. */
+static void Test_BusyGateAndStatusReadBack(void)
+{
+    printf("[TEST 29] SW-020: WEL+BUSY from one 05h read, WRSR read-back...\n");
+
+    /* (1) WEL=1 + WIP=1 동시 상태. 옛 코드는 이 첫 읽기에서 OK를 돌려줬다
+     *     (WEL만 검사했으므로). 지금은 BUSY가 풀릴 때까지 기다려야 한다. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;              /* W25Q64: 표준 1바이트 경로 */
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+
+    assert(Flash_WriteEnable() == FLASH_OK);       /* 먼저 정상적으로 WEL을 세운다 */
+    assert((s_mock.sr1[0] & FLASH_SR1_WEL) != 0U);
+
+    s_mock.busy_reads_remaining = 3U;              /* 자체 타이밍 사이클 진행 중 */
+    s_mock.wren_count = 0U;
+    assert(Flash_WriteEnable() == FLASH_OK);
+    assert(s_mock.busy_reads_remaining == 0U);     /* BUSY가 풀릴 때까지 기다렸다 */
+    assert(s_mock.wren_count == 4U);               /* 3회는 busy로 무시, 4회째 성공 */
+
+    /* (2) WEL=0 + busy 구간. WREN이 무시되므로 재시도해야만 성공한다. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+
+    s_mock.busy_reads_remaining = 2U;
+    s_mock.wren_count = 0U;
+    assert(Flash_WriteEnable() == FLASH_OK);
+    assert((s_mock.sr1[0] & FLASH_SR1_WEL) != 0U);
+    assert(s_mock.busy_reads_remaining == 0U);
+    assert(s_mock.wren_count == 3U);
+
+    /* (3) 조용히 사라진 WRSR은 read-back이 잡아낸다. 옛 코드는 OK를 돌려줬다. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+
+    s_mock.drop_next_wrsr = true;
+    assert(Flash_WriteStatus(1U, 0x04U) == FLASH_ERR_WRITE_FAIL);
+    assert((s_mock.sr1[0] & 0x04U) == 0x00U);      /* 실제로 반영되지 않았다 */
+
+    /* (4) 정상 쓰기는 그대로 통과하고 값이 반영된다. */
+    assert(Flash_WriteStatus(1U, 0x04U) == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x04U) != 0U);
+
+    printf("  - Waited out BUSY, then proved the dropped WRSR. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1389,9 +1466,10 @@ int main(void)
     Test_NoConnectRefusesDataPath();
     Test_GdCoupledWriteKeepsQe();
     Test_Bp4VersusQeBit();
+    Test_BusyGateAndStatusReadBack();
 
     printf("================================================================\n");
-    printf(" ALL 28 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 29 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;
