@@ -148,6 +148,18 @@ static void Mock_SetBootConfig(uint32_t jedec_expect, uint16_t sfc_page, uint32_
     Mock_SetBootConfigHz(jedec_expect, sfc_page, features, 0xFFFFFFFFU);
 }
 
+/* Does the emulated part use the FIXED 16-bit WRSR (01h) frame?
+ * Look it up in the model table instead of hard-coding one part number, so
+ * every GigaDevice density (16Mb / 32Mb / 64Mb) behaves like the silicon.
+ * (GD25LQ16E/32E/64E section 7.4: 8-bit writes clear S15-S8, i.e. QE + CMP.) */
+static bool Mock_Uses16BitWrsr(void)
+{
+    const FLASH_INFO *info = Flash_FindDevice(s_mock.mock_jedec_id);
+
+    return (info != NULL) &&
+           ((info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U);
+}
+
 /* Override weak SPI functions for test verification */
 void Flash_SPI_Init(void)
 {
@@ -376,7 +388,7 @@ void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
      * ------------------------------------------------------------------- */
     if ((xfer->tx_buf != NULL) && (xfer->tx_buf[0] == F_CMD_WRSR1)) {
         s_mock.wrsr1_frame_bytes = xfer->tx_len;
-        if ((xfer->tx_len == 2U) && (s_mock.mock_jedec_id == 0xC86017U)) {  /* GD25LQ64E */
+        if ((xfer->tx_len == 2U) && Mock_Uses16BitWrsr()) {
             s_mock.sr2[s_mock.current_die] &= (uint8_t)~0x42U;   /* clear QE (S9) + CMP (S14) */
         }
     }
@@ -398,6 +410,8 @@ static void Test_TableLookup(void)
     assert(Flash_FindDevice(0xEF4020U) != NULL); /* W25Q512JV */
     assert(Flash_FindDevice(0xEF4019U) != NULL); /* W25Q256JV */
     assert(Flash_FindDevice(0xC86017U) != NULL); /* GD25LQ64E */
+    assert(Flash_FindDevice(0xC86016U) != NULL); /* GD25LQ32E */
+    assert(Flash_FindDevice(0xC86015U) != NULL); /* GD25LQ16E */
 
     assert(Flash_FindDevice(0x123456U) == NULL);
 
@@ -996,6 +1010,8 @@ static void Test_FlashIdxAccess(void)
     assert(g_flash_table[FLASH_IDX_MX25L512].jedec_id == 0xC22010U);
     assert(g_flash_table[FLASH_IDX_MX25L512MB].jedec_id == 0xC2201AU);
     assert(g_flash_table[FLASH_IDX_GD25LQ64E].jedec_id == 0xC86017U);
+    assert(g_flash_table[FLASH_IDX_GD25LQ32E].jedec_id == 0xC86016U);
+    assert(g_flash_table[FLASH_IDX_GD25LQ16E].jedec_id == 0xC86015U);
     printf("  - FLASH_IDX order + FindDevice access verified. PASSED.\n\n");
 }
 
@@ -1497,6 +1513,79 @@ static void Test_BootConfigCarriesSpiClock(void)
     printf("  - 24 MHz applied; absent/absurd values keep 10 MHz and still boot. PASSED.\n\n");
 }
 
+/******************************************************************************
+ * [TEST 31] SW-030: GigaDevice density coverage (16Mb / 32Mb / 64Mb)
+ *
+ * The GD25LQ family keeps ONE command set across densities - only the JEDEC
+ * capacity byte and the array size change. This test proves the table carries
+ * all three, and that each one boots, enables QE in SR2 and still addresses
+ * with three bytes on the wire.
+ ******************************************************************************/
+static void Test_GigaDeviceDensities(void)
+{
+    typedef struct
+    {
+        uint32_t    jedec;
+        FLASH_MODEL model;
+        uint32_t    size;
+        const char *name;
+    } GD_PART;
+
+    static const GD_PART parts[] = {
+        { 0xC86015U, FLASH_MODEL_GD25LQ16E, 2U * 1024U * 1024U, "GD25LQ16E" },
+        { 0xC86016U, FLASH_MODEL_GD25LQ32E, 4U * 1024U * 1024U, "GD25LQ32E" },
+        { 0xC86017U, FLASH_MODEL_GD25LQ64E, 8U * 1024U * 1024U, "GD25LQ64E" }
+    };
+
+    printf("[TEST 31] SW-030: GigaDevice 16Mb/32Mb/64Mb density coverage...\n");
+
+    for (uint32_t i = 0U; i < (uint32_t)(sizeof(parts) / sizeof(parts[0])); i++)
+    {
+        uint8_t buf[16];
+
+        Mock_Reset();
+        s_mock.mock_jedec_id = parts[i].jedec;
+        Mock_SetStatus(0x1CU, 0x00U, 0x00U);   /* SR1 has BP bits set, QE off */
+
+        assert(Flash_Init() == FLASH_OK);
+        assert(g_flash_handle.info != NULL);
+
+        /* 1) the right row was selected, with the right geometry */
+        assert(g_flash_handle.info->model_id   == parts[i].model);
+        assert(g_flash_handle.info->jedec_id   == parts[i].jedec);
+        assert(g_flash_handle.info->flash_size == parts[i].size);
+        assert(g_flash_handle.info->addr_bytes == 3U);   /* all three < 16 MB */
+
+        /* 2) same status layout as the 64Mb part: QE = SR2 S9, BP4 = SR1 S6 */
+        assert(g_flash_handle.info->qe_reg == 2U);
+        assert(g_flash_handle.info->qe_bit == 1U);
+        assert((g_flash_handle.info->features & FLASH_FEAT_BP4) != 0U);
+        assert((g_flash_handle.info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U);
+
+        /* 3) QE came up in SR2 while SR1 survived -> the 16-bit 01h ran */
+        assert(s_mock.sr1[0] == 0x1CU);
+        assert((s_mock.sr2[0] & 0x02U) != 0U);
+        assert(s_mock.wrsr1_frame_bytes == 3U);   /* 01h + SR1 + SR2 */
+
+        /* 4) a plain read still puts THREE address bytes on the wire */
+        memset(buf, 0, sizeof(buf));
+        assert(Flash_Read(0x00000010U, buf, 16U, FLASH_READ_SINGLE,
+                          FLASH_READ_UNIT_BYTE, 0U) == FLASH_OK);
+        assert(s_xfer.last_first_tx == F_CMD_READ);
+        assert(s_xfer.last_tx_len == 4U);         /* 1 opcode + 3 address */
+
+        printf("  - %s: %u KB, 3-byte address, SR2.QE, 16-bit WRSR. PASSED.\n",
+               parts[i].name, (unsigned)(parts[i].size / 1024U));
+    }
+
+    /* 5) a density that is NOT in the table must still be refused */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86018U;             /* GD25LQ128 - not supported */
+    assert(Flash_Init() != FLASH_OK);
+    assert(Flash_GetState() == FLASH_STATE_ERROR);
+    printf("  - Unlisted density 0xC86018 still refused. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1535,9 +1624,10 @@ int main(void)
     Test_Bp4VersusQeBit();
     Test_BusyGateAndStatusReadBack();
     Test_BootConfigCarriesSpiClock();
+    Test_GigaDeviceDensities();
 
     printf("================================================================\n");
-    printf(" ALL 30 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 31 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

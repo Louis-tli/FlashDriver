@@ -62,6 +62,8 @@ typedef enum
     FLASH_MODEL_W25Q512JV,              /* Winbond 512Mb */
     FLASH_MODEL_W25Q256JV,              /* Winbond 256Mb */
     FLASH_MODEL_GD25LQ64E,              /* GigaDevice 64Mb (1.8V) */
+    FLASH_MODEL_GD25LQ32E,              /* GigaDevice 32Mb (1.8V) */
+    FLASH_MODEL_GD25LQ16E,              /* GigaDevice 16Mb (1.8V) */
     FLASH_MODEL_UNKNOWN
 } FLASH_MODEL;
 

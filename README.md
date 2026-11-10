@@ -79,6 +79,8 @@ void app_start(void)
 | **W25Q256JV** | Winbond | `0xEF4019` | 32MB | 4B | 4-Byte Address Mode (`0xB7`) 자동 진입 |
 | **W25Q512JV** | Winbond | `0xEF4020` | 64MB | 4B | 4-Byte Address Mode (`0xB7`) 자동 진입 |
 | **GD25LQ64E** | GigaDevice | `0xC86017` | 8MB | 3B | SR1+SR2 2-Byte 동시 쓰기 (`0x01`) 지원 |
+| **GD25LQ32E** | GigaDevice | `0xC86016` | 4MB | 3B | 64Mb와 동일 명령·상태 구조 (SW-030) |
+| **GD25LQ16E** | GigaDevice | `0xC86015` | 2MB | 3B | 64Mb와 동일 명령·상태 구조 (SW-030) |
 
 ---
 
@@ -92,7 +94,7 @@ void app_start(void)
 ├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
 ├── flash.c          # 드라이버 코어 엔진 (Init, Read, Program, Erase, Die Select 등)
 ├── flash_table.h    # Flash 모델 검색 인터페이스, FLASH_IDX 순서 enum 및 테이블 선언
-├── flash_table.c    # 7종 Flash 메모리 ROM 테이블 (FLASH_IDX 순서, C99 Designated Initializer)
+├── flash_table.c    # 9종 Flash 메모리 ROM 테이블 (FLASH_IDX 순서, C99 Designated Initializer)
 ├── flash_cmd.h      # Read/Program/Erase 명령 + 3B/4B 주소폭별 opcode 선택 인터페이스
 ├── flash_cmd.c      # 명령 엔진 (주소폭별 opcode 분기, Enter-4B Method B 지원)
 ├── flash_crc.h      # 소프트웨어 CRC/체크섬 알고리즘 인터페이스
@@ -103,7 +105,7 @@ void app_start(void)
 ├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
 ├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
 ├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (30 suites)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (31 suites)
 ```
 
 ---
@@ -123,8 +125,8 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (30 suites):
-1. **Table Lookup**: 7종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
+### 테스트 통과 항목 (31 suites):
+1. **Table Lookup**: 9종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
 4. **Page Boundary Splitting**: 256바이트 경계 걸침 시 3회 분할 쓰기
@@ -147,13 +149,14 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 21. **Easy API Round-Trip**: `Flash_ReadBytes/WriteBytes/EraseRange/EraseChip` 간편 API 검증
 22. **Time-based Delay (SW-014)**: µs→루프 환산(108/50MHz), 올림 처리, 무효 클록 가드
 23. **VSR WREN 50h WEL-Free (SW-013 WEL)**: 50h는 WEL을 올리지 않음(데이터시트 준수) — WEL=0 상태의 휘발성 WRSR 성공 + 명령 삽입 시 50h 무효화 규칙
-24. **Per-Model Dummy Config (SW-013 DUMMY)**: 7종 모델별 dummy_last/dummy_value 검증 — Winbond 0xFF(Fxh), MX/GD 0x00, mode_byte 0x00
+24. **Per-Model Dummy Config (SW-013 DUMMY)**: 9종 모델별 dummy_last/dummy_value 검증 — Winbond 0xFF(Fxh), MX/GD 0x00, mode_byte 0x00
 25. **Buffered One-Frame Transfer (SW-016)**: 읽기 1프레임(tx_len=cmd+addr+dummy, rx_len=데이터), Fast Read 더미 헤더 포함, 페이지 프로그램 데이터 페이즈 동일 프레임, SPI/SFC 공용 지오메트리(정렬·오버플로) 일치, 실하드웨어 SFC 경로에서 DMA 버퍼/CRC_RES 무변경
 26. **NO_CONNECT Data-Path Gate (SW-018)**: 동작하던 칩이 사라진 뒤 재초기화로 NO_CONNECT가 되면 Read/Write/Erase/Protect가 모두 `FLASH_ERR_NO_CONNECT`로 거부되고 **SPI 프레임 0개** (버스에 아무것도 나가지 않음)
 27. **GD Coupled Status Write (SW-019)**: GD25LQ64E는 `01h`가 고정 16비트 명령 — SR1을 바꾸는 모든 경로가 SR2를 읽어 그대로 되돌려 보내는 3바이트 프레임을 쓰고, 쓰기 후 SR1·SR2를 **둘 다 read-back 검증**. QE가 조용히 꺼지지 않음
 28. **BP4 vs QE Shared Bit (SW-019)**: GD25LQ64E의 S6=BP4(다섯 번째 보호 비트)를 `Flash_Protect(0x10)`으로 설정/해제하고, MX25L 계열에서는 같은 비트(QE)를 **건드리지 않음**
 29. **BUSY Gate + WRSR Read-Back (SW-020)**: WEL=1·BUSY=1이 동시에 보이는 구간에서 `Flash_WriteEnable()`이 기다렸다가 성공하는지, 그리고 조용히 사라진 WRSR을 read-back이 `FLASH_ERR_WRITE_FAIL`로 잡는지
 30. **부팅 클럭은 설정 블록이 정한다 (SW-021)**: `spi_hz`=24 MHz면 정확히 그 값으로 상승, 24 B 구 블록(0xFFFF_FFFF)이나 200 MHz 같은 비정상 값이면 **10 MHz 유지 + 정상 부팅**
+31. **GigaDevice 밀도 3종 (SW-030)**: GD25LQ**16E/32E/64E**를 같은 테스트로 돌려 — 선택된 행·`flash_size`·`addr_bytes`=3, SR2.QE / SR1.BP4 / 16비트 `01h`(3바이트 프레임) / 3바이트 주소(총 4바이트 송신)까지 확인하고, 표에 없는 `0xC86018`은 여전히 거부
 
 ---
 
@@ -269,7 +272,32 @@ GD25LQ64E에는 **`31h`(SR2 단독 쓰기)가 없습니다.** SR2에 닿는 유�
 > `FLASH_BOOT_CONFIG`가 28 B에서 벗어나면 컴파일이 실패하도록 `typedef char[... == 28]` 가드를 넣었습니다 — 양산 도구가 이미 써 둔 블록 크기가 조용히 바뀌는 일을 막습니다.
 
 > 비용: ROM **+24 B** (`-Os`, `-Oz` 동일), easy API만 링크하는 `--gc-sections` 구성에서는 **+0 B**(이 경로에 `Flash_BootInit`이 링크되지 않음).
-> 테스트 1개 추가로 **30 suites**. 수정 전 코드에서는 TEST 30이 **line 1470**에서 실패합니다.
+> 테스트 1개 추가로 **30 suites**(SW-021 시점). 수정 전 코드에서는 TEST 30이 **line 1470**에서 실패합니다.
+
+---
+
+## 🧩 GigaDevice 16Mb / 32Mb 추가 (SW-030)
+
+GD25LQ 패밀리는 **용량만 다르고 명령 세트·상태 레지스터·타이밍이 같습니다.** 그래서 64Mb 행을 복제하고 밀도에 해당하는 값만 바꿨습니다.
+
+| 부품 | JEDEC (`9Fh`) | 용량 | BP1 단독 보호 구간 (CMP=0) |
+|------|---------------|------|-----------------------------|
+| GD25LQ16E | `C8 60 15` | 2MB | blocks 30–31, `1E0000h–1FFFFFH`, 128KB (Upper 1/16) |
+| GD25LQ32E | `C8 60 16` | 4MB | blocks 62–63, `3E0000h–3FFFFFH`, 128KB (Upper 1/32) |
+| GD25LQ64E | `C8 60 17` | 8MB | blocks 124–127, `7C0000h–7FFFFFH`, 256KB (Upper 1/32) |
+
+세 부품이 공유하는 성질(그래서 코드 분기가 필요 없음):
+
+- QE = **SR2 S9** (`qe_reg = 2`, `qe_bit = 1`)
+- BP4 = **SR1 S6** → `FLASH_FEAT_BP4` (MX25L의 같은 비트는 QE라서 공용 코드가 조심해야 하는 지점)
+- `01h`는 **고정 16비트** — 8비트만 클록하면 S15–S8(QE·CMP)이 0으로 지워짐 → `FLASH_FEAT_STATUS_2BYTE_WRITE`
+- `50h` Volatile SR WREN 지원 → `FLASH_FEAT_VSR_WREN`
+- 주소 3바이트 (셋 다 16MB 미만)
+
+근거 문헌: GD25LQ32E Rev1.6 / GD25LQ16E — ID Definitions 표(`9Fh → C8 60 1x`), §7.4 WRSR(16비트 고정), 보호 영역 표(CMP=0). 64Mb와 같은 실리콘 패밀리라는 판단은 **명령·비트 위치·프레임 길이가 문서상 동일**하다는 대조에서 나왔습니다.
+
+> 비용: ROM **+160 B** (행당 80 B × 2, 코드 증가 0, `-Os`/`-Oz` 동일).
+> 테스트 1개 추가로 **31 suites**. 32Mb 행의 `flash_size`를 1MB로 틀리게 바꾸면 TEST 31이 **line 1556**에서 실패합니다(역검증 완료).
 
 ---
 
@@ -299,8 +327,8 @@ GD25LQ64E에는 **`31h`(SR2 단독 쓰기)가 없습니다.** SR2에 닿는 유�
 > 숫자만 보면 SW-017 시점이 가장 작지만, 그 버전은 칩이 사라져도 0xFF를 정상 데이터로 돌려주고,
 > SR1을 한 번 바꾸면 QE가 조용히 꺼지는 상태였습니다. 네 가지 빌드 모두 같은 진입 심볼 목록
 > (`Flash_BootInit` + easy API 4종)으로 측정했습니다.
-> 표의 절대값은 SW-019 시점 실측이고, SW-020(+88 B)·SW-021(+24 B)는 **같은 툴체인으로 이전/현재를 A/B 링크해 잰 증분**입니다.
-> 그래서 지금 `-Oz` 전체 유지 빌드는 대략 **5,632 B**(5,520 + 88 + 24)로 보면 됩니다.
+> 표의 절대값은 SW-019 시점 실측이고, SW-020(+88 B)·SW-021(+24 B)·SW-030(+160 B)는 **같은 툴체인으로 이전/현재를 A/B 링크해 잰 증분**입니다.
+> 그래서 지금 `-Oz` 전체 유지 빌드는 대략 **5,792 B**(5,520 + 88 + 24 + 160)로 보면 됩니다.
 
 크기 우선 빌드:
 
@@ -310,8 +338,8 @@ clang --target=arm-none-eabi -mcpu=cortex-m0 -mthumb \
 # 링크 단계에서 -Wl,--gc-sections 추가
 ```
 
-> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(30/30 테스트 통과).  
-> 더 줄이려면 기능을 줄이는 선택이 필요합니다: CRC 알고리즘 고정(−170 B) · `flash_easy` 제외(−296 B) · 지원 모델 축소(모델당 −92 B).
+> `-Oz`·`-flto`는 동작을 바꾸지 않습니다(31/31 테스트 통과).  
+> 더 줄이려면 기능을 줄이는 선택이 필요합니다: CRC 알고리즘 고정(−170 B) · `flash_easy` 제외(−296 B) · 지원 모델 축소(모델당 −80 B).
 
 ### 읽기 모드와 QPI
 

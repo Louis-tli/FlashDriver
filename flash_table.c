@@ -209,6 +209,73 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
             [FLASH_READ_QUAD]    = RC_QUAD,
             [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
         }
+    },
+
+    /* ------------------------------------------------------------------------
+     * [FLASH_IDX_GD25LQ32E] GD25LQ32E (GigaDevice 32M-bit / 4MB, 1.8V)
+     *
+     * Same silicon family as the 64Mb part: identical command set, identical
+     * status-register layout (S6 = BP4, S9 = QE, S14 = CMP) and the same
+     * FIXED 16-bit WRSR (01h) - GD25LQ32E Rev1.6 section 7.4 says CS# may be
+     * raised "after the eighth or sixteen bit" and that S15-S8 "will be
+     * cleared to 0" when only 8 bits are clocked in. Only two things change
+     * with density: the JEDEC capacity byte and the array size.
+     *
+     * JEDEC (GD25LQ32E Rev1.6, Table of ID Definitions, page 19):
+     *   9Fh -> C8 60 16   (16 = 2^22 bytes = 4 MB)
+     * Protection (Table 3, CMP = 0): BP1 alone protects blocks 62-63,
+     *   3E0000h-3FFFFFH = 128 KB = Upper 1/32.
+     * ------------------------------------------------------------------------ */
+    [FLASH_IDX_GD25LQ32E] = {
+        .jedec_id     = 0xC86016U,
+        .model_id     = FLASH_MODEL_GD25LQ32E,
+        .flash_size   = 4U * 1024U * 1024U,
+        .addr_bytes   = 3U,                 /* 4 MB fits in 24 address bits */
+        .qe_reg       = 2U,                 /* QE lives in SR2 (read with 35h) */
+        .qe_bit       = 1U,                 /* SR2 S9 */
+        .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE |
+                        FLASH_FEAT_VSR_WREN | FLASH_FEAT_BP4,
+        .die_count    = 1U,
+        .die_size     = 0U,
+        .read_cfg     = {
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,   /* BBh, 6 dummy cycles */
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6   /* EBh, M7-M0 then 6 dummy */
+        }
+    },
+
+    /* ------------------------------------------------------------------------
+     * [FLASH_IDX_GD25LQ16E] GD25LQ16E (GigaDevice 16M-bit / 2MB, 1.8V)
+     *
+     * JEDEC (GD25LQ16E datasheet, Table of ID Definitions, page 18):
+     *   9Fh -> C8 60 15   (15 = 2^21 bytes = 2 MB)
+     * Protection (Table 2, CMP = 0): BP1 alone protects blocks 30-31,
+     *   1E0000h-1FFFFFH = 128 KB = Upper 1/32.
+     * Everything else - QE in SR2 S9, BP4 in S6, 16-bit 01h, 50h VSR write
+     * enable - is identical to the larger densities.
+     * ------------------------------------------------------------------------ */
+    [FLASH_IDX_GD25LQ16E] = {
+        .jedec_id     = 0xC86015U,
+        .model_id     = FLASH_MODEL_GD25LQ16E,
+        .flash_size   = 2U * 1024U * 1024U,
+        .addr_bytes   = 3U,
+        .qe_reg       = 2U,
+        .qe_bit       = 1U,
+        .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE |
+                        FLASH_FEAT_VSR_WREN | FLASH_FEAT_BP4,
+        .die_count    = 1U,
+        .die_size     = 0U,
+        .read_cfg     = {
+            [FLASH_READ_SINGLE]  = RC_SINGLE,
+            [FLASH_READ_FAST]    = RC_FAST,
+            [FLASH_READ_DUAL]    = RC_DUAL,
+            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
+            [FLASH_READ_QUAD]    = RC_QUAD,
+            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
+        }
     }
 };
 
