@@ -76,8 +76,8 @@ void app_start(void)
 | **MX25L512** | Macronix | `0xC22010` / `0xC2201A` | 64KB / 64MB | 3B / 4B | SR1 bit 6 QE, 1-byte WRSR |
 | **W25M512** | Winbond | `0xEF6119` / `0xEF7119` | 64MB (2x32MB) | 4B | SpiStack 2-Die, Software Die Select (`0xC2`) 자동 제어 |
 | **W25Q128JW** | Winbond | `0xEF6018` | 16MB | 3B | 1.8V 저전력 규격, Single / Quad Page Program |
-| **W25Q256JV** | Winbond | `0xEF4019` | 32MB | 4B | 4-Byte Address Mode (`0xB7`) 자동 진입 |
-| **W25Q512JV** | Winbond | `0xEF4020` | 64MB | 4B | 4-Byte Address Mode (`0xB7`) 자동 진입 |
+| **W25Q256JV** | Winbond | `0xEF4019` | 32MB | 4B | 전용 4B opcode 자동 선택 (Method A, 예: Quad I/O `ECh`) |
+| **W25Q512JV** | Winbond | `0xEF4020` | 64MB | 4B | 전용 4B opcode 자동 선택 (Method A) |
 | **GD25LQ64E** | GigaDevice | `0xC86017` | 8MB | 3B | SR1+SR2 2-Byte 동시 쓰기 (`0x01`) 지원 |
 | **GD25LQ32E** | GigaDevice | `0xC86016` | 4MB | 3B | 64Mb와 동일 명령·상태 구조 (SW-030) |
 | **GD25LQ16E** | GigaDevice | `0xC86015` | 2MB | 3B | 64Mb와 동일 명령·상태 구조 (SW-030) |
@@ -105,7 +105,7 @@ void app_start(void)
 ├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
 ├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
 ├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (31 suites)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (32 suites)
 ```
 
 ---
@@ -125,7 +125,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (31 suites):
+### 테스트 통과 항목 (32 suites):
 1. **Table Lookup**: 9종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -157,6 +157,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 29. **BUSY Gate + WRSR Read-Back (SW-020)**: WEL=1·BUSY=1이 동시에 보이는 구간에서 `Flash_WriteEnable()`이 기다렸다가 성공하는지, 그리고 조용히 사라진 WRSR을 read-back이 `FLASH_ERR_WRITE_FAIL`로 잡는지
 30. **부팅 클럭은 설정 블록이 정한다 (SW-021)**: `spi_hz`=24 MHz면 정확히 그 값으로 상승, 24 B 구 블록(0xFFFF_FFFF)이나 200 MHz 같은 비정상 값이면 **10 MHz 유지 + 정상 부팅**
 31. **GigaDevice 밀도 3종 (SW-030)**: GD25LQ**16E/32E/64E**를 같은 테스트로 돌려 — 선택된 행·`flash_size`·`addr_bytes`=3, SR2.QE / SR1.BP4 / 16비트 `01h`(3바이트 프레임) / 3바이트 주소(총 4바이트 송신)까지 확인하고, 표에 없는 `0xC86018`은 여전히 거부
+32. **보호는 전원을 꺼도 남는다 (SW-035)**: 목(mock)에 **비휘발성/휘발성 두 벌**의 상태 레지스터를 두고 전원 차단(`Mock_PowerCycle`)을 흉내 냄 — `Flash_Protect()`가 `06h`로 arm되어 BP가 **전원 재투입 후에도 유지**되고, QE는 `50h`로만 써서 **부팅 때마다 다시 켜지는 휘발성**임을 GD25LQ64E·W25Q128JW·MX25L512 세 부품에서 확인. 보호 전에 BUSY가 남아 있어도 먼저 기다린 뒤 스냅샷을 뜨므로 WIP가 상태값에 섞이지 않음
 
 ---
 
@@ -301,6 +302,57 @@ GD25LQ 패밀리는 **용량만 다르고 명령 세트·상태 레지스터·�
 
 ---
 
+## 🧱 공용 read 프로파일 + 보호의 비휘발성 (SW-035)
+
+두 가지를 함께 고쳤습니다. 하나는 **표 크기**, 다른 하나는 **실하드웨어에서 조용히 사라지던 보호**입니다.
+
+### (A) read 설정을 부품별 → 제품군별로 공유
+
+`FLASH_INFO`의 `read_cfg[7]`(모드 7종 × 8 B = 56 B)를 **`const FLASH_READ_CFG *`(4 B)** 로 바꾸고, 실제 값은 5개 프로파일로 뽑아 두었습니다.
+
+| 프로파일 | 쓰는 부품 | dummy |
+|----------|-----------|-------|
+| `s_rc_wb6` | W25Q128JW | 6 (Fxh 계열은 `0xFF`) |
+| `s_rc_wb8` | W25Q256JV / W25Q512JV / W25M512 | 8 |
+| `s_rc_nm6` | MX25L512 | 6 (`0x00`) |
+| `s_rc_nm8` | MX25L512 64MB | 8 |
+| `s_rc_gd6` | GD25LQ16E / 32E / 64E | 6 |
+
+- 표 한 행: **80 B → 28 B**. 새 밀도(예: GD 128Mb)는 **28 B 한 줄**만 추가하면 끝납니다.
+- 새 제품군이 생겨도 read 프로파일이 같으면 그대로 재사용, 다르면 프로파일 하나(56 B)만 추가.
+- `FLASH_READ_QPI`는 프로파일에 **의도적으로 0**을 둡니다 — `Flash_Read()`가 `read_cfg`를 읽기 전에 QPI를 거부하고, SFC 하드웨어가 4선 opcode 송신을 지원하지 않습니다.
+- 소비자 코드는 그대로입니다: `info->read_cfg[mode]` (포인터여도 인덱싱 문법 동일).
+
+### (B) 보호(BP)는 비휘발성, QE는 휘발성
+
+데이터시트 규칙(예: GD25LQ32E §7.5):
+
+> The non-volatile Status Register bits can also be written to as **volatile** bits … The Write Enable for Volatile Status Register command **will not set the Write Enable Latch**.
+
+즉 `06h`로 arm하면 **비휘발성**, `50h`로 arm하면 **휘발성**에 씁니다. SW-035 이전에는 `FLASH_FEAT_VSR_WREN` 부품에서 **모든** 상태 쓰기가 `50h`를 썼기 때문에:
+
+- `Flash_Protect()`가 성공을 반환하고 읽어 보면 BP가 설정되어 있는데,
+- **전원을 껐다 켜면 보호가 조용히 사라졌습니다.** 테스트 목에는 상태 레지스터가 한 벌뿐이라 이 결함이 보이지 않았습니다.
+
+수정 내용:
+
+| 항목 | 이전 | SW-035 |
+|------|------|--------|
+| 보호(BP/SRP) arm | `50h` (휘발성) | **`06h`** (비휘발성, `FLASH_SR_WRITE_PERSISTENT`) |
+| QE arm | `50h` | `50h` 그대로 (부팅마다 다시 켜지므로 낭비 없음) |
+| 공개 `Flash_WriteStatus()` | `50h` | `50h` 그대로 — **기존 동작 bit-for-bit 유지**(하위 호환) |
+| `Flash_WriteStatusPair()` | 선행 BUSY 검사 없음 | **`05h`로 먼저 idle 확인** 후 진행 |
+| `Flash_WriteBlockProtect()` | BUSY 중 읽은 SR1을 그대로 되씀 | **먼저 BUSY 대기 → 스냅샷 → read-modify-write** |
+
+마지막 항목이 실제로 잡아낸 버그: BUSY가 남아 있을 때 SR1을 읽으면 **WIP 비트(bit0)가 스냅샷에 섞여** 그 값이 그대로 되써지고, 그 뒤 `06h`는 무시되며 read-back이 타임아웃했습니다(테스트에서 `rc=-3`로 재현). 이제는 idle을 먼저 확인합니다.
+
+부작용 하나는 **문서화**했습니다: 2바이트 `01h` 부품(GD/Winbond)에서 보호를 걸면 그 순간의 SR2도 함께 굽기 때문에, 그때 켜져 있던 QE가 비휘발성으로 남습니다. QE는 quad 명령에서만 의미가 있어 무해하지만, "QE는 휘발성"이라는 설명과 어긋나므로 TEST 32가 이 사실을 **명시적으로 검증**합니다.
+
+> 비용: `-Oz` 전체 유지 빌드 **6,076 → 5,970 B (−106 B)**. A(read_cfg 공유) −172 B, C(이중 SR 정책 + BUSY 선행) +66 B.
+> 테스트 1개 추가로 **32 suites**. 역검증: arm을 다시 `50h` 단일로 되돌리면 TEST 32가 **line 1676**에서 실패합니다(확인 완료).
+
+---
+
 ## 📦 코드 크기 (ROM) — SW-017
 
 원칙은 **사람이 읽고 고치기 쉬운 코드**입니다. 크기는 구조를 꼬지 않고 줄일 수 있는 곳에서만 줄였습니다.
@@ -328,7 +380,7 @@ GD25LQ 패밀리는 **용량만 다르고 명령 세트·상태 레지스터·�
 > SR1을 한 번 바꾸면 QE가 조용히 꺼지는 상태였습니다. 네 가지 빌드 모두 같은 진입 심볼 목록
 > (`Flash_BootInit` + easy API 4종)으로 측정했습니다.
 > 표의 절대값은 SW-019 시점 실측이고, SW-020(+88 B)·SW-021(+24 B)·SW-030(+160 B)는 **같은 툴체인으로 이전/현재를 A/B 링크해 잰 증분**입니다.
-> 그래서 지금 `-Oz` 전체 유지 빌드는 대략 **5,792 B**(5,520 + 88 + 24 + 160)로 보면 됩니다.
+> SW-035(A+C)는 **실측 A/B**로 **6,076 B → 5,970 B (−106 B)** 입니다(`-Oz` 전체 유지, 같은 명령으로 HEAD와 워킹트리를 각각 빌드).
 
 크기 우선 빌드:
 

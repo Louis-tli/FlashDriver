@@ -345,8 +345,12 @@ typedef struct
     uint8_t             die_count;          /* 1 for single die, 2 for dual-die */
     uint32_t            die_size;           /* Size of single die in bytes */
 
-    /* Read mode configuration table */
-    FLASH_READ_CFG      read_cfg[FLASH_READ_MODE_MAX];
+    /* Read mode configuration table.
+     * SW-035: points at one shared, read-only profile (see flash_table.c)
+     * instead of storing a private copy of six 8-byte entries (56 bytes per
+     * row). Indexed by FLASH_READ_MODE exactly like the old array, so every
+     * consumer keeps reading info->read_cfg[mode] unchanged. */
+    const FLASH_READ_CFG *read_cfg;
 } FLASH_INFO;
 
 /******************************************************************************

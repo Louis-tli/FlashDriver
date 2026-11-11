@@ -605,12 +605,38 @@ int Flash_WaitBusy(uint32_t timeout_loops)
 }
 
 /******************************************************************************
- * Helper: status-register write-enable (50h when supported, else 06h)
+ * Status-register write-enable: 06h or 50h (SW-035)
+ *
+ * The device keeps TWO copies of the status register: a non-volatile one that
+ * survives power-off, and a volatile one that is reloaded from it at every
+ * power-up. Both are written with 01h - the only difference is the command
+ * that arms the write:
+ *
+ *   06h Write Enable           -> arms the NON-VOLATILE copy (endures)
+ *   50h Write Enable Volatile  -> arms the VOLATILE copy only
+ *
+ * Which one is correct depends on the CALLER, not on the part:
+ *   - Block protect must survive a power cycle, so Flash_Protect() asks for
+ *     PERSISTENT (06h). Before SW-035 this path used 50h on the parts that
+ *     advertise FLASH_FEAT_VSR_WREN, so the protection was written only into
+ *     the volatile copy and silently vanished at the next power-up.
+ *   - Quad enable is re-applied on every boot anyway, so it stays VOLATILE
+ *     (50h) and spends no non-volatile program cycles on something that is
+ *     written again on the next reset.
  ******************************************************************************/
-static int Flash_SrWriteEnable(void)
+typedef enum
+{
+    FLASH_SR_WRITE_VOLATILE   = 0,  /* 50h when the part supports it */
+    FLASH_SR_WRITE_PERSISTENT = 1   /* always 06h */
+} FLASH_SR_WRITE_MODE;
+
+static int Flash_SrWriteEnable(FLASH_SR_WRITE_MODE mode)
 {
     const FLASH_INFO *info = g_flash_handle.info;
-    if ((info != NULL) && ((info->features & FLASH_FEAT_VSR_WREN) != 0U)) {
+    const bool can_arm_volatile =
+        (info != NULL) && ((info->features & FLASH_FEAT_VSR_WREN) != 0U);
+
+    if ((mode == FLASH_SR_WRITE_VOLATILE) && can_arm_volatile) {
         return Flash_WriteEnableVolatile();
     }
     return Flash_WriteEnable();
@@ -642,9 +668,20 @@ static int Flash_SrWriteEnable(void)
  * @brief  Send one 16-bit WRSR (01h + SR1 + SR2) and check both bytes.
  *         Reserved for parts that cannot write SR2 on its own (GD25LQ64E).
  */
-static int Flash_WriteStatusPair(uint8_t sr1, uint8_t sr2)
+static int Flash_WriteStatusPair(uint8_t sr1, uint8_t sr2, FLASH_SR_WRITE_MODE mode)
 {
-    int status = Flash_SrWriteEnable();
+    /* Idle BEFORE arming (SW-035). This path used to arm straight away while
+     * the general path below waits first. With the persistent arm (06h) a
+     * WREN that arrives during WIP=1 is ignored by the device, WEL never
+     * sets, and the 01h frame is dropped - so the write failed only after a
+     * full busy timeout and a read-back mismatch. One extra 05h poll is much
+     * cheaper than that. */
+    int status = Flash_WaitBusy(200000U);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
+    status = Flash_SrWriteEnable(mode);
     if (status != FLASH_OK) {
         return status;
     }
@@ -679,7 +716,15 @@ static int Flash_WriteStatusPair(uint8_t sr1, uint8_t sr2)
     return FLASH_OK;
 }
 
-int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
+/**
+ * @brief  Write one status register, choosing durable or volatile storage.
+ *
+ * @param  reg_idx 1 (SR1), 2 (SR2) or 3 (SR3)
+ * @param  val     Value placed in the writable bits; read-only bits ignored
+ * @param  mode    FLASH_SR_WRITE_PERSISTENT - survives power-off (block
+ *                 protect), FLASH_SR_WRITE_VOLATILE - reloaded at boot (QE)
+ */
+static int Flash_WriteStatusEx(uint8_t reg_idx, uint8_t val, FLASH_SR_WRITE_MODE mode)
 {
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
@@ -711,7 +756,7 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
         else {
             sr2 = val;
         }
-        return Flash_WriteStatusPair(sr1, sr2);
+        return Flash_WriteStatusPair(sr1, sr2, mode);
     }
 
     /* ---- Standard one-byte status write -------------------------------- */
@@ -723,7 +768,7 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
         return status;
     }
 
-    status = Flash_SrWriteEnable();
+    status = Flash_SrWriteEnable(mode);
     if (status != FLASH_OK) {
         return status;
     }
@@ -773,6 +818,19 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 }
 
 /******************************************************************************
+ * Public status write (kept for API/tests)
+ *
+ * Historical behaviour, kept bit-for-bit: the volatile copy is written. Those
+ * bits are re-applied at every boot, so persisting them would burn the status
+ * register's program budget for nothing. Block protect does NOT use this
+ * entry point - it asks for PERSISTENT explicitly (SW-035).
+ ******************************************************************************/
+int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
+{
+    return Flash_WriteStatusEx(reg_idx, val, FLASH_SR_WRITE_VOLATILE);
+}
+
+/******************************************************************************
  * Helper (SW-017): write the 4 block-protect bits of SR1 in one place.
  *
  *   Protect(bp)   -> write BP3..BP0 = bp
@@ -793,12 +851,24 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
     }
 
     const FLASH_INFO *info = g_flash_handle.info;
+    int status;
+    uint8_t sr1 = 0U;
+
     if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
 
-    uint8_t sr1 = 0U;
-    int status = Flash_ReadStatus(1U, &sr1);
+    /* Settle the part BEFORE the snapshot (SW-035). SR1 is read, modified and
+     * written back; if that read lands mid-cycle it carries the transient WIP
+     * bit into the value being written, and the 06h arm that follows is
+     * ignored while WIP=1 - so the protect would time out on its own read-back
+     * even though the device was healthy. */
+    status = Flash_WaitBusy(200000U);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
+    status = Flash_ReadStatus(1U, &sr1);
     if (status != FLASH_OK) {
         return status;
     }
@@ -825,7 +895,11 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
         return FLASH_OK;            /* already in the requested state */
     }
 
-    return Flash_WriteStatus(1U, new_sr1);
+    /* PERSISTENT (SW-035): a block protect that is only written to the
+     * volatile status copy disappears at the next power-up without any error
+     * being reported. Protection is a configuration, so it goes to the
+     * non-volatile copy: 06h instead of 50h. */
+    return Flash_WriteStatusEx(1U, new_sr1, FLASH_SR_WRITE_PERSISTENT);
 }
 
 /******************************************************************************

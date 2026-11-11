@@ -72,6 +72,16 @@ typedef struct
     /* SW-021: the last SPI clock the driver asked for, so a test can prove the
      * boot settings block really drives the bus speed. */
     uint32_t spi_speed_hz;
+
+    /* SW-035: the part keeps TWO copies of the status register.
+     *   sr1/sr2/sr3      = the VOLATILE copy (what 05h/35h/15h read back)
+     *   nv_sr1/nv_sr2/.. = the NON-VOLATILE copy (survives power-off)
+     * A 01h frame armed by 06h writes both; armed by 50h it writes only the
+     * volatile copy, exactly like the datasheet describes. Before this model
+     * existed the mock had a single copy, so a block protect written with 50h
+     * looked permanent in the tests while vanishing on real hardware. */
+    uint8_t  nv_sr1[2], nv_sr2[2], nv_sr3[2];
+    bool     wrsr_volatile;         /* the 01h being executed is a volatile write */
 } MOCK_SPI_STATE;
 
 static MOCK_SPI_STATE s_mock;
@@ -119,7 +129,34 @@ static void Mock_SetStatus(uint8_t sr1, uint8_t sr2, uint8_t sr3)
         s_mock.sr1[d] = sr1;
         s_mock.sr2[d] = sr2;
         s_mock.sr3[d] = sr3;
+        s_mock.nv_sr1[d] = sr1;     /* SW-035: power-up image matches */
+        s_mock.nv_sr2[d] = sr2;
+        s_mock.nv_sr3[d] = sr3;
     }
+    s_mock.wrsr_volatile = false;
+}
+
+/* SW-035: cut the power and bring it back. The volatile status registers are
+ * reloaded from the non-volatile image - the one thing a block protect must
+ * survive. Everything else (memory content) is kept, as on real hardware. */
+static void Mock_PowerCycle(void)
+{
+    for (int d = 0; d < 2; d++) {
+        s_mock.sr1[d] = s_mock.nv_sr1[d];
+        s_mock.sr2[d] = s_mock.nv_sr2[d];
+        s_mock.sr3[d] = s_mock.nv_sr3[d];
+    }
+    s_mock.vsr_wren_pending     = false;
+    s_mock.wrsr_accepted        = false;
+    s_mock.wrsr_volatile        = false;
+    s_mock.busy_reads_remaining = 0U;
+    s_mock.drop_next_wrsr       = false;
+    s_mock.current_die          = 0U;
+    s_mock.cmd_byte_index       = 0U;
+    g_flash_handle.state        = FLASH_STATE_NO_CONNECT;   /* firmware restarts too */
+    g_flash_handle.info         = NULL;
+    g_flash_handle.qe_enabled   = false;
+    g_flash_handle.locked       = false;
 }
 
 /* Build a valid boot settings block and install it as the readable config. */
@@ -200,6 +237,9 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
         if ((tx_byte == F_CMD_WRSR1) || (tx_byte == F_CMD_WRSR2) || (tx_byte == F_CMD_WRSR3)) {
             s_mock.wrsr_accepted = (((s_mock.sr1[s_mock.current_die] & FLASH_SR1_WEL) != 0U) ||
                                     s_mock.vsr_wren_pending);
+            /* SW-035: remember WHICH copy this frame is allowed to touch. 50h
+             * arms only the volatile copy; 06h arms the non-volatile one. */
+            s_mock.wrsr_volatile    = s_mock.vsr_wren_pending;
             s_mock.vsr_wren_pending = false;
         }
         else if (tx_byte != F_CMD_VSR_WREN) {
@@ -279,10 +319,16 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             }
             if (s_mock.cmd_byte_index == 1U) {
                 s_mock.sr1[s_mock.current_die] = tx_byte;
+                if (!s_mock.wrsr_volatile) {
+                    s_mock.nv_sr1[s_mock.current_die] = tx_byte;   /* SW-035 */
+                }
                 s_mock.cmd_byte_index++;
             }
             else if (s_mock.cmd_byte_index == 2U) {
                 s_mock.sr2[s_mock.current_die] = tx_byte;
+                if (!s_mock.wrsr_volatile) {
+                    s_mock.nv_sr2[s_mock.current_die] = tx_byte;   /* SW-035 */
+                }
                 s_mock.cmd_byte_index++;
             }
             break;
@@ -292,6 +338,9 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
                 break;                      /* chip rejects: no WEL, no pending 50h */
             }
             s_mock.sr2[s_mock.current_die] = tx_byte;
+            if (!s_mock.wrsr_volatile) {
+                s_mock.nv_sr2[s_mock.current_die] = tx_byte;       /* SW-035 */
+            }
             break;
 
         case F_CMD_WREN: /* 06h */
@@ -1586,6 +1635,98 @@ static void Test_GigaDeviceDensities(void)
     printf("  - Unlisted density 0xC86018 still refused. PASSED.\n\n");
 }
 
+/******************************************************************************
+ * [TEST 32] SW-035: block protect must survive a power cycle
+ *
+ * The status register exists twice inside the part: a non-volatile copy that
+ * is loaded at power-up, and a volatile copy that 05h/35h/15h read back.
+ * A 01h frame writes the non-volatile copy only when it was armed by 06h;
+ * armed by 50h it writes just the volatile copy.
+ *
+ * Before SW-035 every status write on a FLASH_FEAT_VSR_WREN part was armed
+ * with 50h, so Flash_Protect() looked correct in the tests (the mock kept a
+ * single copy) while the protection disappeared at the next power-up on real
+ * hardware. This test models both copies and cuts the power.
+ ******************************************************************************/
+static void Test_ProtectSurvivesPowerCycle(void)
+{
+    uint32_t vsr_before_protect = 0U;
+
+    printf("[TEST 32] SW-035: block protect persists, QE stays volatile...\n");
+
+    /* (1) GD25LQ64E boots: QE is enabled, but only in the volatile copy. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(s_mock.vsr_wren_count > 0U);          /* QE used the 50h path */
+    assert((s_mock.sr2[0] & 0x02U) != 0U);       /* live copy: QE on */
+    assert((s_mock.nv_sr2[0] & 0x02U) == 0U);    /* durable copy: untouched */
+
+    Mock_PowerCycle();
+    assert((s_mock.sr2[0] & 0x02U) == 0U);       /* QE is volatile by design */
+
+    /* (2) Reboot, then protect BP1 and cut the power again. */
+    assert(Flash_Init() == FLASH_OK);
+    assert((s_mock.sr2[0] & 0x02U) != 0U);       /* QE re-armed at boot */
+
+    vsr_before_protect = s_mock.vsr_wren_count;
+    assert(Flash_Protect(0x02U) == FLASH_OK);    /* mask bit1 -> BP1 */
+    assert((s_mock.sr1[0] & 0x08U) != 0U);
+    assert(s_mock.vsr_wren_count == vsr_before_protect);  /* no 50h here */
+    assert((s_mock.nv_sr1[0] & 0x08U) != 0U);    /* durable copy written */
+
+    /* The 01h frame on these parts is 16-bit, so it necessarily programs SR2
+     * as well - the QE bit that is live at that moment therefore becomes
+     * durable too. Harmless (QE only matters for quad commands) but it must be
+     * understood, not discovered: this assertion documents it. */
+    assert((s_mock.nv_sr2[0] & 0x02U) != 0U);
+
+    Mock_PowerCycle();
+    assert((s_mock.sr1[0] & 0x08U) != 0U);       /* survives: reloaded from NV */
+
+    /* (3) The release must be durable too. */
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_Unprotect() == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);
+    Mock_PowerCycle();
+    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);
+
+    /* (4) Winbond W25Q128JW behaves identically (it also has VSR_WREN). */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF6018U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_Protect(0x07U) == FLASH_OK);    /* BP0..BP2 */
+    assert((s_mock.nv_sr1[0] & 0x1CU) == 0x1CU);
+    Mock_PowerCycle();
+    assert((s_mock.sr1[0] & 0x1CU) == 0x1CU);
+
+    /* (5) Macronix has no volatile arm at all: 06h is the only option, so this
+     *     path must keep working without FLASH_FEAT_VSR_WREN. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC22010U;            /* MX25L512 */
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_Protect(0x02U) == FLASH_OK);
+    assert(s_mock.vsr_wren_count == 0U);
+    Mock_PowerCycle();
+    assert((s_mock.sr1[0] & 0x08U) != 0U);
+
+    /* (6) Ordering: a protect issued while the part is still finishing its
+     *     previous cycle must wait first. Without the idle check the 06h arm
+     *     is dropped during WIP=1 and the 01h frame goes with it. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    s_mock.busy_reads_remaining = 3U;
+    assert(Flash_Protect(0x02U) == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x08U) != 0U);
+
+    printf("  - BP survives power-off (GD/Winbond/Macronix); QE re-arms. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1625,9 +1766,10 @@ int main(void)
     Test_BusyGateAndStatusReadBack();
     Test_BootConfigCarriesSpiClock();
     Test_GigaDeviceDensities();
+    Test_ProtectSurvivesPowerCycle();
 
     printf("================================================================\n");
-    printf(" ALL 31 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 32 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

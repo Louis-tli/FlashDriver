@@ -45,6 +45,72 @@
 #define RC_QUAD_IO_NM8  READCFG(F_CMD_QUAD_IO_READ, F_CMD_QUAD_IO_READ_4B, 8U, 3U, 0x00U, 0x00U, 0x00U, 4U) /* Macronix, dummy 8 */
 
 /******************************************************************************
+ * SW-035: Shared read-mode profiles
+ *
+ * Why the rows no longer own their read settings
+ * ----------------------------------------------
+ * Each table row used to carry its own copy of the 6-entry read_cfg[] array
+ * (56 bytes of the 80-byte row). Nine parts, however, need only FIVE distinct
+ * profiles: Winbond, Macronix and GigaDevice differ in the dummy-byte value
+ * and in the dummy-cycle count, and densities of the same family share both.
+ *
+ * Keeping one array per profile and a pointer per row drops the row from 80
+ * to 28 bytes (measured with sizeof on the Cortex-M0 build) and removes the
+ * duplicated bytes entirely. Adding another density of an existing family is
+ * now one table row and nothing else - no new profile, no new code.
+ *
+ * The arrays are indexed by FLASH_READ_MODE. FLASH_READ_QPI stays 0 on
+ * purpose: Flash_Read() rejects QPI before it ever touches read_cfg, and the
+ * TCON SFC cannot send the opcode on four lines anyway.
+ ******************************************************************************/
+static const FLASH_READ_CFG s_rc_wb6[FLASH_READ_MODE_MAX] = {   /* Winbond, quad dummy 6 */
+    [FLASH_READ_SINGLE]  = RC_SINGLE,
+    [FLASH_READ_FAST]    = RC_FAST,
+    [FLASH_READ_DUAL]    = RC_DUAL,
+    [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
+    [FLASH_READ_QUAD]    = RC_QUAD,
+    [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB6
+};
+
+static const FLASH_READ_CFG s_rc_wb8[FLASH_READ_MODE_MAX] = {   /* Winbond, quad dummy 8 */
+    [FLASH_READ_SINGLE]  = RC_SINGLE,
+    [FLASH_READ_FAST]    = RC_FAST,
+    [FLASH_READ_DUAL]    = RC_DUAL,
+    [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
+    [FLASH_READ_QUAD]    = RC_QUAD,
+    [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB8
+};
+
+static const FLASH_READ_CFG s_rc_nm6[FLASH_READ_MODE_MAX] = {   /* Macronix, quad dummy 6 */
+    [FLASH_READ_SINGLE]  = RC_SINGLE,
+    [FLASH_READ_FAST]    = RC_FAST,
+    [FLASH_READ_DUAL]    = RC_DUAL,
+    [FLASH_READ_DUAL_IO] = RC_DUAL_IO_NM,
+    [FLASH_READ_QUAD]    = RC_QUAD,
+    [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
+};
+
+static const FLASH_READ_CFG s_rc_nm8[FLASH_READ_MODE_MAX] = {   /* Macronix, quad dummy 8 */
+    [FLASH_READ_SINGLE]  = RC_SINGLE,
+    [FLASH_READ_FAST]    = RC_FAST,
+    [FLASH_READ_DUAL]    = RC_DUAL,
+    [FLASH_READ_DUAL_IO] = RC_DUAL_IO_NM,
+    [FLASH_READ_QUAD]    = RC_QUAD,
+    [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM8
+};
+
+/* GigaDevice GD25LQ16E / 32E / 64E: BBh takes 6 dummy cycles and EBh takes
+ * M7-M0 followed by 6 dummy cycles - identical across the three densities. */
+static const FLASH_READ_CFG s_rc_gd6[FLASH_READ_MODE_MAX] = {
+    [FLASH_READ_SINGLE]  = RC_SINGLE,
+    [FLASH_READ_FAST]    = RC_FAST,
+    [FLASH_READ_DUAL]    = RC_DUAL,
+    [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
+    [FLASH_READ_QUAD]    = RC_QUAD,
+    [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
+};
+
+/******************************************************************************
  * ROM Table (indexed by FLASH_IDX)
  ******************************************************************************/
 const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
@@ -62,14 +128,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
 .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_VSR_WREN,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB6
-        }
+        .read_cfg     = s_rc_wb6,
     },
 
     /* ------------------------------------------------------------------------
@@ -85,14 +144,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
 .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_4BYTE_ADDR | FLASH_FEAT_VSR_WREN,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB8
-        }
+        .read_cfg     = s_rc_wb8,
     },
 
     /* ------------------------------------------------------------------------
@@ -108,14 +160,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
 .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_4BYTE_ADDR | FLASH_FEAT_VSR_WREN,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB8
-        }
+        .read_cfg     = s_rc_wb8,
     },
 
     /* ------------------------------------------------------------------------
@@ -131,14 +176,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
 .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_4BYTE_ADDR | FLASH_FEAT_MULTI_DIE | FLASH_FEAT_VSR_WREN,
         .die_count    = 2U,
         .die_size     = 32U * 1024U * 1024U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_WB,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_WB8
-        }
+        .read_cfg     = s_rc_wb8,
     },
 
     /* ------------------------------------------------------------------------
@@ -154,14 +192,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_NM,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
-        }
+        .read_cfg     = s_rc_nm6,
     },
 
     /* ------------------------------------------------------------------------
@@ -177,14 +208,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
         .features     = FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_4BYTE_ADDR,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_NM,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM8
-        }
+        .read_cfg     = s_rc_nm8,
     },
 
     /* ------------------------------------------------------------------------
@@ -201,14 +225,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
                         FLASH_FEAT_VSR_WREN | FLASH_FEAT_BP4,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
-        }
+        .read_cfg     = s_rc_gd6,
     },
 
     /* ------------------------------------------------------------------------
@@ -237,14 +254,9 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
                         FLASH_FEAT_VSR_WREN | FLASH_FEAT_BP4,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,   /* BBh, 6 dummy cycles */
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6   /* EBh, M7-M0 then 6 dummy */
-        }
+        /* Same read profile as GD25LQ64E/16E: BBh takes 6 dummy cycles,
+         * EBh takes M7-M0 then 6 dummy cycles. */
+        .read_cfg     = s_rc_gd6,
     },
 
     /* ------------------------------------------------------------------------
@@ -268,14 +280,7 @@ const FLASH_INFO g_flash_table[FLASH_TABLE_ENTRIES_COUNT] =
                         FLASH_FEAT_VSR_WREN | FLASH_FEAT_BP4,
         .die_count    = 1U,
         .die_size     = 0U,
-        .read_cfg     = {
-            [FLASH_READ_SINGLE]  = RC_SINGLE,
-            [FLASH_READ_FAST]    = RC_FAST,
-            [FLASH_READ_DUAL]    = RC_DUAL,
-            [FLASH_READ_DUAL_IO] = RC_DUAL_IO_GD,
-            [FLASH_READ_QUAD]    = RC_QUAD,
-            [FLASH_READ_QUAD_IO] = RC_QUAD_IO_NM6
-        }
+        .read_cfg     = s_rc_gd6,
     }
 };
 

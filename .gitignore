@@ -25,3 +25,6 @@ JLinkLog.txt
 *.swp
 *~
 Thumbs.db
+
+# Local backups
+.backup_phase01/
