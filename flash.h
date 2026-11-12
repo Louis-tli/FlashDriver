@@ -54,18 +54,28 @@ typedef enum
 /******************************************************************************
  * Supported Flash Models
  ******************************************************************************/
-typedef enum
-{
-    FLASH_MODEL_MX25L512        = 0,    /* Macronix (512Kb or 512Mb) */
-    FLASH_MODEL_W25M512,                /* Winbond SpiStack Multi-Die (2x256Mb) */
-    FLASH_MODEL_W25Q128JW,              /* Winbond 128Mb (1.8V) */
-    FLASH_MODEL_W25Q512JV,              /* Winbond 512Mb */
-    FLASH_MODEL_W25Q256JV,              /* Winbond 256Mb */
-    FLASH_MODEL_GD25LQ64E,              /* GigaDevice 64Mb (1.8V) */
-    FLASH_MODEL_GD25LQ32E,              /* GigaDevice 32Mb (1.8V) */
-    FLASH_MODEL_GD25LQ16E,              /* GigaDevice 16Mb (1.8V) */
-    FLASH_MODEL_UNKNOWN
-} FLASH_MODEL;
+/* SW-041: a "model" IS its 24-bit JEDEC ID.
+ *
+ * The old enum forced one table row per product, so every new density was
+ * new data. With the value equal to the ID, Flash_FindDevice() resolves the
+ * part from vendor + density and this type carries no table cost at all.
+ *
+ * Compatibility note for saved boot settings: settings written by firmware
+ * that used the old enum hold 0..7 in the "model" field. Flash_Init() treats
+ * any value below 0x01000000 as "no hint" and falls back to the JEDEC probe,
+ * which is the same behaviour those products had with FLASH_MODEL_UNKNOWN. */
+typedef uint32_t FLASH_MODEL;
+
+#define FLASH_MODEL_MX25L512        0xC22010U   /* Macronix 512 Kb / 64 KB */
+#define FLASH_MODEL_MX25L512MB      0xC2201AU   /* Macronix 512 Mb / 64 MB */
+#define FLASH_MODEL_W25M512         0xEF6119U   /* Winbond SpiStack 2 x 32 MB */
+#define FLASH_MODEL_W25Q128JW       0xEF6018U   /* Winbond 128 Mb / 16 MB, 1.8V */
+#define FLASH_MODEL_W25Q512JV       0xEF4020U   /* Winbond 512 Mb / 64 MB */
+#define FLASH_MODEL_W25Q256JV       0xEF4019U   /* Winbond 256 Mb / 32 MB */
+#define FLASH_MODEL_GD25LQ64E       0xC86017U   /* GigaDevice 64 Mb / 8 MB, 1.8V */
+#define FLASH_MODEL_GD25LQ32E       0xC86016U   /* GigaDevice 32 Mb / 4 MB, 1.8V */
+#define FLASH_MODEL_GD25LQ16E       0xC86015U   /* GigaDevice 16 Mb / 2 MB, 1.8V */
+#define FLASH_MODEL_UNKNOWN         0xFFFFFFFFU /* "no hint" */
 
 /******************************************************************************
  * Read Modes
@@ -324,15 +334,17 @@ typedef struct
 #define FLASH_BLOCK_SIZE                (65536U)    /* 64 KiB block erase      */
 
 /******************************************************************************
- * Flash Model Information (Stored in ROM as const)
+ * Flash Device Information (one live record in RAM, SW-041)
  ******************************************************************************/
 typedef struct
 {
     /* No model-name string: it was 4 bytes per entry plus the string table.
      * The model is identified by jedec_id / model_id, which the code actually
-     * uses (SW-017: smaller ROM, one less thing to keep in sync). */
+     * uses (SW-017: smaller ROM, one less thing to keep in sync).
+     * SW-041: the record describes the part that is on the bus right now, not
+     * a row of a static table; model_id is simply the JEDEC ID. */
     uint32_t            jedec_id;           /* 24-bit JEDEC ID (RDID 9Fh) */
-    FLASH_MODEL         model_id;           /* Internal model enum */
+    FLASH_MODEL         model_id;           /* SW-041: equals jedec_id */
     uint32_t            flash_size;         /* Total density in bytes */
     uint8_t             addr_bytes;         /* 3 or 4 */
 

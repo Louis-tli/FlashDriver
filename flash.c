@@ -397,7 +397,10 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     /* 5. Look up the selected product. The config's model field selects an exact
      *    variant when needed; otherwise fall back to the expected JEDEC ID. */
     const FLASH_INFO *p_info = NULL;
-    if (cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN) {
+    /* SW-041: the "model" field is a JEDEC ID now. Settings written by older
+     * firmware hold the old enum (0..7) there; those are not IDs, so they are
+     * treated as "no hint" and the jedec_expect probe below decides. */
+    if ((cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN) && (cfg.model >= 0x01000000UL)) {
         p_info = Flash_FindDeviceByModel((FLASH_MODEL)cfg.model);
     }
     if (p_info == NULL) {

@@ -82,6 +82,10 @@ void app_start(void)
 | **GD25LQ32E** | GigaDevice | `0xC86016` | 4MB | 3B | 64Mb와 동일 명령·상태 구조 (SW-030) |
 | **GD25LQ16E** | GigaDevice | `0xC86015` | 2MB | 3B | 64Mb와 동일 명령·상태 구조 (SW-030) |
 
+> **SW-041**: 위 표는 "우리가 시험한 부품 목록"일 뿐이고, 실제 지원 범위는 더 넓습니다.
+> 같은 제조사의 **모든 용량**이 자동으로 해석됩니다 (예: `0xEF4015` 2MB, `0xEF4016` 4MB, `0xEF4017` 8MB,
+> `0xC84017` 8MB, `0xC22018` 16MB …). 자세한 원리는 아래 2단 설계 절을 보세요.
+
 ---
 
 ## 📁 파일 구성 (File Structure)
@@ -94,7 +98,7 @@ void app_start(void)
 ├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
 ├── flash.c          # 드라이버 코어 엔진 (Init, Read, Program, Erase, Die Select 등)
 ├── flash_table.h    # Flash 모델 검색 인터페이스, FLASH_IDX 순서 enum 및 테이블 선언
-├── flash_table.c    # 9종 Flash 메모리 ROM 테이블 (FLASH_IDX 순서, C99 Designated Initializer)
+├── flash_table.c    # 제조사 3행 + 예외 2행 + 용량 계산 (SW-041 2단 설계)
 ├── flash_cmd.h      # Read/Program/Erase 명령 + 3B/4B 주소폭별 opcode 선택 인터페이스
 ├── flash_cmd.c      # 명령 엔진 (주소폭별 opcode 분기, Enter-4B Method B 지원)
 ├── flash_crc.h      # 소프트웨어 CRC/체크섬 알고리즘 인터페이스
@@ -543,3 +547,75 @@ TCON SFC의 전송 순서는 **CMD → ADDR → DUMMY_LAST(첫 더미 = M7-0 모
 
 - 나머지 더미 바이트(dummy_value)는 전 계열 `0x00` (don't care)
 - `mode_byte`는 전 모델 `0x00` — M7-0은 DUMMY_LAST가 전송 (과거 0x20은 Winbond Read Command Bypass 진입 위험)
+
+---
+
+## 🧩 제조사 + 용량 2단 설계 (SW-041)
+
+### 무엇이 문제였나
+
+기존 표는 **용량 1개 = 행 1개**였습니다. 9행 × 28바이트 = **252바이트**가 ROM에 있고,
+W25Q64JV를 추가하려면 또 한 행을 써야 했습니다. 그런데 행 안에서 용량 때문에 달라지는 것은
+**크기 하나뿐**이고, 그 크기는 이미 JEDEC ID 안에 들어 있습니다.
+
+```text
+9Fh 응답:  [제조사] [타입] [용량코드]
+             0xEF    0x40    0x19   →  용량코드 0x19 = 2^25 = 32MB
+```
+
+### 지금 구조
+
+```text
+1단  s_vendor[3]      제조사 1행 = QE 위치 + 기능 비트 + read 프로파일 2개
+      0xEF Winbond    QE=SR2.1,  더미 첫바이트 0xFF
+      0xC2 Macronix   QE=SR1.6,  더미 0x00
+      0xC8 GigaDevice QE=SR2.1,  16비트 WRSR 필수
+
+2단  용량 = 1UL << (JEDEC 용량코드)      ← 계산, 데이터 아님
+
+예외  s_exception[2]  공식이 틀리는 부품만
+      0xEF4020 W25Q512JV  코드가 0x20이라 2^32가 되지만 실제 64MB
+      0xEF6119 W25M512    코드 0x19는 다이 1개(32MB), 패키지는 2다이 64MB
+```
+
+**16MB 경계 규칙** 하나가 나머지를 전부 설명합니다:
+
+| 크기 | 주소 바이트 | 더미 사이클 | 근거 |
+|---|---|---|---|
+| ≤ 16MB | 3 | 6 | `0xFFFFFF`가 3바이트 최대 주소 |
+| > 16MB | 4 | 8 | 4바이트 주소 + 256Mb 이상 데이터시트 |
+
+이 규칙으로 **기존 9행이 전부 그대로 재현**됩니다 (TEST 19가 부품별로 확인).
+
+### 결과 — 새 용량은 공짜
+
+| 항목 | 이전 | 이후 |
+|---|---|---|
+| W25Q16/32/64JV 추가 | 행 3개 = **+84 B** | **+0 B** |
+| GD25LQ128E, MX25L128 | 지원 안 됨 | **자동 지원** |
+| ROM (드라이버 9파일) | 6,030 B | **6,018 B (−12 B)** |
+| RAM | 0 | **+28 B** (활성 부품 1개 레코드) |
+| 테스트 | 33/33 | **33/33 PASS** |
+
+ROM이 −12바이트 줄어든 것은 덤이고, 진짜 이득은 **"용량 추가 = 데이터 0"**입니다.
+
+### 계약이 바뀐 곳 (중요)
+
+1. **`FLASH_MODEL`은 이제 JEDEC ID 그 자체**입니다 (`typedef uint32_t`).
+   `FLASH_MODEL_W25Q256JV`는 `0xEF4019`와 같은 값입니다.
+   → 저장된 설정 블록의 `model` 필드에 옛 enum(0~7)이 들어 있어도 안전합니다.
+   `Flash_Init()`이 `0x01000000` 미만 값을 "힌트 없음"으로 보고 JEDEC 프로브로 넘어갑니다.
+2. **`Flash_FindDevice()`가 돌려주는 포인터는 다음 조회까지만 유효**합니다.
+   정적 테이블 행이 아니라 RAM 레코드 1개를 채워서 돌려주기 때문입니다.
+   `Flash_Init()` / `Flash_GetInfo()` 용도에는 문제가 없습니다.
+3. **없는 제품을 거절하는 기준이 "행 없음" → "제조사 행 없음"으로 바뀌었습니다.**
+   `0xC86018`(GD25LQ128E)은 이전에 거절되던 ID인데 지금은 16MB로 정상 동작합니다.
+   반대로 `0x9D4018`(ISSI)처럼 제조사 행이 없는 ID는 여전히 `FLASH_ERR_UNSUPPORTED`입니다.
+
+### 검증 (실측)
+
+- `ALL 33 VERIFICATION TEST SUITES PASSED` — 33/33
+- 엄격 경고 24종: **기존 51건 그대로, 신규 0건** (메시지 정규화 diff 0)
+- 역검증 ① `0xEF4020` 예외 행을 지우면 → **TEST 1 line 472** 즉시 실패
+- 역검증 ② 16MB 경계 규칙을 3바이트 고정으로 바꾸면 → **line 638** 실패
+- ROM: `romsize.sh` 6,030 → **6,018 B**

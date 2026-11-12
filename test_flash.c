@@ -477,16 +477,26 @@ static void Test_TableLookup(void)
 
     assert(Flash_FindDevice(0x123456U) == NULL);
 
-    for (uint32_t i = 0U; i < FLASH_TABLE_ENTRIES_COUNT; i++) {
-        const FLASH_INFO *p_info = &g_flash_table[i];
-        printf("  - Model [%u]: JEDEC 0x%06X | ModelId %u | Size: %u KB | Addr: %uB\n",
-               i, p_info->jedec_id, (uint32_t)p_info->model_id,
-               (p_info->flash_size / 1024U), p_info->addr_bytes);
+    /* SW-041: there is no flat table to walk any more. Sweep the IDs that used
+     * to be rows and print what the vendor + density resolver makes of them. */
+    static const struct { uint32_t id; const char *name; } known[] = {
+        { 0xEF6018U, "W25Q128JW"  }, { 0xEF4020U, "W25Q512JV"  },
+        { 0xEF4019U, "W25Q256JV"  }, { 0xEF6119U, "W25M512"    },
+        { 0xC22010U, "MX25L512"   }, { 0xC2201AU, "MX25L51245G"},
+        { 0xC86017U, "GD25LQ64E"  }, { 0xC86016U, "GD25LQ32E"  },
+        { 0xC86015U, "GD25LQ16E"  }
+    };
+    for (uint32_t i = 0U; i < (uint32_t)(sizeof(known) / sizeof(known[0])); i++) {
+        const FLASH_INFO *p_info = Flash_FindDevice(known[i].id);
+        assert(p_info != NULL);
+        printf("  - %-13s JEDEC 0x%06X | Size: %6u KB | Addr: %uB | QE: SR%u b%u\n",
+               known[i].name, p_info->jedec_id, (p_info->flash_size / 1024U),
+               p_info->addr_bytes, p_info->qe_reg, p_info->qe_bit);
         /* Geometry is shared by every part (constants, not table fields) */
         assert(FLASH_PAGE_SIZE == 256U);
         assert(FLASH_SECTOR_SIZE == 4096U);
     }
-    printf("  --> Table lookups PASSED.\n\n");
+        printf("  --> Table lookups PASSED.\n\n");
 }
 
 static void Test_InitAndProbe(void)
@@ -1082,27 +1092,71 @@ static void Test_VsrWriteEnable(void)
     printf("  - MX25L512 (no flag): StatusWrite=06h fallback. PASSED.\n\n");
 }
 
-static void Test_FlashIdxAccess(void)
+static void Test_VendorDensityResolution(void)
 {
-    printf("[TEST 19] FLASH_IDX table access pattern...\n");
 
-    /* Owner's usage: Flash_FindDevice(g_flash_table[FLASH_IDX_W25Q256JV].jedec_id) */
-    const FLASH_INFO *w25q256 = Flash_FindDevice(g_flash_table[FLASH_IDX_W25Q256JV].jedec_id);
-    assert(w25q256 != NULL);
-    assert(w25q256->jedec_id == 0xEF4019U);
-    assert(w25q256->model_id == FLASH_MODEL_W25Q256JV);
+    /* (a) Every ID that used to be a table row must resolve to the same facts. */
+    static const struct {
+        uint32_t id; uint32_t size; uint8_t addr; const char *name;
+    } rows[] = {
+        { 0xEF6018U, 16UL*1024UL*1024UL, 3U, "W25Q128JW"   },
+        { 0xEF4020U, 64UL*1024UL*1024UL, 4U, "W25Q512JV"   },
+        { 0xEF4019U, 32UL*1024UL*1024UL, 4U, "W25Q256JV"   },
+        { 0xEF6119U, 64UL*1024UL*1024UL, 4U, "W25M512"     },
+        { 0xC22010U, 64UL*1024UL,        3U, "MX25L512"    },
+        { 0xC2201AU, 64UL*1024UL*1024UL, 4U, "MX25L51245G" },
+        { 0xC86017U,  8UL*1024UL*1024UL, 3U, "GD25LQ64E"   },
+        { 0xC86016U,  4UL*1024UL*1024UL, 3U, "GD25LQ32E"   },
+        { 0xC86015U,  2UL*1024UL*1024UL, 3U, "GD25LQ16E"   }
+    };
 
-    /* Index order must match the FLASH_IDX enum exactly */
-    assert(g_flash_table[FLASH_IDX_W25Q128JW].jedec_id == 0xEF6018U);
-    assert(g_flash_table[FLASH_IDX_W25Q512JV].jedec_id == 0xEF4020U);
-    assert(g_flash_table[FLASH_IDX_W25Q256JV].jedec_id == 0xEF4019U);
-    assert(g_flash_table[FLASH_IDX_W25M512].jedec_id == 0xEF6119U);
-    assert(g_flash_table[FLASH_IDX_MX25L512].jedec_id == 0xC22010U);
-    assert(g_flash_table[FLASH_IDX_MX25L512MB].jedec_id == 0xC2201AU);
-    assert(g_flash_table[FLASH_IDX_GD25LQ64E].jedec_id == 0xC86017U);
-    assert(g_flash_table[FLASH_IDX_GD25LQ32E].jedec_id == 0xC86016U);
-    assert(g_flash_table[FLASH_IDX_GD25LQ16E].jedec_id == 0xC86015U);
-    printf("  - FLASH_IDX order + FindDevice access verified. PASSED.\n\n");
+    printf("[TEST 19] Vendor + density resolution (SW-041)...\n");
+    for (uint32_t i = 0U; i < (uint32_t)(sizeof(rows) / sizeof(rows[0])); i++) {
+        const FLASH_INFO *p = Flash_FindDevice(rows[i].id);
+        assert(p != NULL);
+        assert(p->jedec_id == rows[i].id);
+        assert(p->flash_size == rows[i].size);
+        assert(p->addr_bytes == rows[i].addr);
+        assert(p->model_id == rows[i].id);          /* model == JEDEC ID */
+        printf("  - %-13s %7u KB, %uB addr. PASSED.\n",
+               rows[i].name, p->flash_size / 1024U, p->addr_bytes);
+    }
+
+    /* (b) The rows the old table did not have are now FREE: the density byte
+     *     alone describes them. This is the whole point of SW-041. */
+    assert(Flash_FindDevice(0xEF4015U)->flash_size ==  2UL*1024UL*1024UL); /* W25Q16JV */
+    assert(Flash_FindDevice(0xEF4016U)->flash_size ==  4UL*1024UL*1024UL); /* W25Q32JV */
+    assert(Flash_FindDevice(0xEF4017U)->flash_size ==  8UL*1024UL*1024UL); /* W25Q64JV */
+    assert(Flash_FindDevice(0xEF4015U)->addr_bytes == 3U);
+    assert(Flash_FindDevice(0xEF4015U)->qe_reg == 2U);
+    assert(Flash_FindDevice(0xEF4015U)->qe_bit == 1U);
+
+    /* (c) Same for other vendors and densities that never had a row. */
+    assert(Flash_FindDevice(0xC22018U)->flash_size == 16UL*1024UL*1024UL); /* MX25L128 */
+    assert(Flash_FindDevice(0xC84018U)->flash_size == 16UL*1024UL*1024UL); /* GD25Q128 */
+    assert(Flash_FindDevice(0xC84017U)->flash_size ==  8UL*1024UL*1024UL); /* GD25Q64  */
+
+    /* (d) The 16 MB boundary: 16 MB stays 3-byte, 32 MB flips to 4-byte. */
+    assert(Flash_FindDevice(0xEF6018U)->addr_bytes == 3U);
+    assert(Flash_FindDevice(0xEF4019U)->addr_bytes == 4U);
+    assert(Flash_FindDevice(0xEF6018U)->read_cfg != Flash_FindDevice(0xEF4019U)->read_cfg);
+
+    /* (e) Exceptions still win over the formula. */
+    assert(Flash_FindDevice(0xEF4020U)->flash_size == 64UL*1024UL*1024UL); /* byte 0x20 lies */
+    assert(Flash_FindDevice(0xEF6119U)->die_count == 2U);
+    assert(Flash_FindDevice(0xEF6119U)->die_size == 32UL*1024UL*1024UL);
+    assert((Flash_FindDevice(0xEF6119U)->features & FLASH_FEAT_MULTI_DIE) != 0U);
+
+    /* (f) Unknown vendor / nonsense density / unknown model are refused. */
+    assert(Flash_FindDevice(0x9D4018U) == NULL);   /* ISSI is not supported */
+    assert(Flash_FindDevice(0xEF4000U) == NULL);   /* density 0 */
+    assert(Flash_FindDevice(0xEF40FFU) == NULL);   /* density 255 */
+    assert(Flash_FindDeviceByModel(FLASH_MODEL_UNKNOWN) == NULL);
+
+    /* (g) ByModel is the same lookup: FLASH_MODEL is a JEDEC ID. */
+    assert(Flash_FindDeviceByModel(FLASH_MODEL_W25Q256JV) == Flash_FindDevice(0xEF4019U));
+
+    printf("  - 9 legacy parts reproduced, 6 free densities resolved. PASSED.\n\n");
 }
 
 static void Test_CrcAlgoBootSelect(void)
@@ -1670,12 +1724,22 @@ static void Test_GigaDeviceDensities(void)
                parts[i].name, (unsigned)(parts[i].size / 1024U));
     }
 
-    /* 5) a density that is NOT in the table must still be refused */
+    /* 5) SW-041 contract change: a density that never had a table row is no
+     *    longer "unsupported" - the vendor row plus the density byte describe
+     *    it. GD25LQ128E (0xC86018) was refused before and now just works. */
     Mock_Reset();
-    s_mock.mock_jedec_id = 0xC86018U;             /* GD25LQ128 - not supported */
+    s_mock.mock_jedec_id = 0xC86018U;
+    Mock_SetStatus(0x1CU, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_GetInfo()->flash_size == 16UL * 1024UL * 1024UL);
+    assert(Flash_GetInfo()->addr_bytes == 3U);    /* exactly 16 MB is still 3-byte */
+
+    /* 6) an unknown VENDOR is still refused - that is the real limit now. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0x9D4018U;             /* ISSI: no vendor row */
     assert(Flash_Init() != FLASH_OK);
     assert(Flash_GetState() == FLASH_STATE_ERROR);
-    printf("  - Unlisted density 0xC86018 still refused. PASSED.\n\n");
+    printf("  - Free density 0xC86018 resolves, unknown vendor 0x9D4018 refused. PASSED.\n\n");
 }
 
 /******************************************************************************
@@ -1863,7 +1927,7 @@ int main(void)
     Test_InitNoReset();
     Test_TableReadCfgGuard();
     Test_VsrWriteEnable();
-    Test_FlashIdxAccess();
+    Test_VendorDensityResolution();
     Test_CrcAlgoBootSelect();
     Test_EasyApi();
     Test_DelayUsConversion();
