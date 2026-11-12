@@ -1246,12 +1246,20 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
             return status;
         }
 
-        /* SW-013 / G2: clear block-protect on this die so the program cannot
-         * silently fail on a protected region. */
-        status = Flash_Unprotect();
-        if (status != FLASH_OK) {
-            return status;
-        }
+        /* SW-037: block-protect is NO LONGER cleared here.
+         *
+         * Why: a driver that unlocks the chip by itself silently defeats the
+         * only write protection the product has. A protected region must stay
+         * protected until the caller says otherwise, even if that means the
+         * program is refused by the device.
+         *
+         * The caller now does it explicitly, once, before the first write:
+         *     Flash_Unprotect();
+         *     Flash_Write(...);
+         * CAUTION: this driver does not read back the page after programming,
+         * so a write into a still-protected region returns FLASH_OK while the
+         * device silently ignores it. Callers that must be sure either clear
+         * the protection first (as above) or verify the data themselves. */
 
         /* Bytes left in the current 256-byte page (FLASH_PAGE_SIZE) */
         const uint32_t bytes_to_boundary = FLASH_PAGE_SIZE - (die_addr % FLASH_PAGE_SIZE);
@@ -1374,11 +1382,11 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return status;
     }
 
-    /* SW-013 / G2: clear block-protect on this die so the erase cannot fail silently. */
-    status = Flash_Unprotect();
-    if (status != FLASH_OK) {
-        return status;
-    }
+    /* SW-037: block-protect is NO LONGER cleared here either.
+     * Erase obeys the same rule as program: the protection the caller set
+     * stays in force, and an erase aimed at a protected sector is refused by
+     * the device (this driver reports FLASH_OK without read-back, so call
+     * Flash_Unprotect() first if that is what you want). */
 
     const uint8_t erase_cmd = Flash_CmdErase(mode, g_flash_handle.addr_mode);
     if (erase_cmd == 0x00U) {

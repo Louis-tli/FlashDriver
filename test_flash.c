@@ -59,6 +59,11 @@ typedef struct
      * that cannot address SR2 on its own. */
     uint32_t wrsr1_frame_bytes;
 
+    /* SW-037: how many status-register write frames (01h/31h/11h) have been
+     * seen on the bus at all. Program and erase must NOT add to this count:
+     * that is how the test proves the driver no longer unlocks the chip. */
+    uint32_t wrsr_frame_count;
+
     /* SW-020: the device is in the middle of a self-timed cycle for the next N
      * status reads. While it is, SR1 reports WIP(BUSY)=1 and WREN is dropped,
      * so WEL and BUSY can legitimately be seen set at the same time - the
@@ -440,6 +445,14 @@ void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
         if ((xfer->tx_len == 2U) && Mock_Uses16BitWrsr()) {
             s_mock.sr2[s_mock.current_die] &= (uint8_t)~0x42U;   /* clear QE (S9) + CMP (S14) */
         }
+    }
+
+    /* SW-037: count every status-register write that reaches the bus. */
+    if ((xfer->tx_buf != NULL) &&
+        ((xfer->tx_buf[0] == F_CMD_WRSR1) ||
+         (xfer->tx_buf[0] == F_CMD_WRSR2) ||
+         (xfer->tx_buf[0] == F_CMD_WRSR3))) {
+        s_mock.wrsr_frame_count++;
     }
 
     Flash_SPI_CS_High();
@@ -883,24 +896,52 @@ static void Test_ProtectUnprotect(void)
     printf("  - Protect sets BP bits, Unprotect clears them. PASSED.\n\n");
 }
 
-static void Test_WriteClearsBP(void)
+/* SW-037: the driver must NOT unlock the chip by itself any more.
+ * The old TEST 14 asserted the opposite ("a write clears the BP bits"), so the
+ * test is inverted together with the contract: a program or erase aimed at a
+ * still-protected part must leave SR1 alone and must not put a single status
+ * write frame on the bus. Flash_Unprotect() is what the caller does instead. */
+static void Test_WriteKeepsProtect(void)
 {
     uint8_t write_buffer[8];
-    printf("[TEST 14] G2: Write auto-clears block-protect (no silent failure)...\n");
+    printf("[TEST 14] SW-037: Write/Erase never clear block-protect...\n");
 
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF4019U;
-    Mock_SetStatus(0x1CU, 0x02U, 0x00U);              /* SR1 has BP0..BP2 set */
+    Mock_SetStatus(0x1CU, 0x02U, 0x00U);              /* SR1: BP0..BP2 already set */
     int status = Flash_Init();
     assert(status == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x3CU) == 0x1CU);         /* Init leaves BP alone */
 
+    /* (1) program while protected: the 02h frame goes out, the SR is untouched */
     memset(write_buffer, 0x5A, sizeof(write_buffer));
+    s_mock.page_program_count = 0U;
+    s_mock.wrsr_frame_count   = 0U;
+    status = Flash_Write(0x00000000U, write_buffer, sizeof(write_buffer), FLASH_PROGRAM_SINGLE);
+    assert(status == FLASH_OK);
+    assert(s_mock.page_program_count >= 1U);           /* program frame was sent */
+    assert(s_mock.wrsr_frame_count == 0U);             /* no 01h / 31h / 11h at all */
+    assert((s_mock.sr1[0] & 0x3CU) == 0x1CU);          /* protection still in force */
+
+    /* (2) erase while protected: same rule, no unlock, no restore */
+    s_mock.wrsr_frame_count = 0U;
+    status = Flash_Erase(0x00000000U, FLASH_ERASE_SECTOR);
+    assert(status == FLASH_OK);
+    assert(s_mock.wrsr_frame_count == 0U);
+    assert((s_mock.sr1[0] & 0x3CU) == 0x1CU);
+
+    /* (3) the caller decides: explicit Unprotect, then the write is allowed */
+    status = Flash_Unprotect();
+    assert(status == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);
+
     s_mock.page_program_count = 0U;
     status = Flash_Write(0x00000000U, write_buffer, sizeof(write_buffer), FLASH_PROGRAM_SINGLE);
     assert(status == FLASH_OK);
-    assert(s_mock.page_program_count >= 1U);          /* program happened */
-    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);         /* BP cleared before write */
-    printf("  - Write succeeded and cleared BP bits. PASSED.\n\n");
+    assert(s_mock.page_program_count >= 1U);
+    assert((s_mock.sr1[0] & 0x3CU) == 0x00U);          /* still clear, not re-set */
+
+    printf("  - Write/Erase leave SR untouched; caller unprotects. PASSED.\n\n");
 }
 
 static void Test_AddrModeOpcodes(void)
@@ -1399,13 +1440,15 @@ static void Test_GdCoupledWriteKeepsQe(void)
     assert((s_mock.sr2[0] & FLASH_SR2_QE_WINBOND) != 0U);            /* QE 유지 */
     assert(s_mock.wrsr1_frame_bytes == 3U);                          /* opcode+SR1+SR2 */
 
-    /* (2) 실제 쓰기 경로 - Flash_Write는 페이지마다 Unprotect를 부른다.
-     *     여기서 QE가 꺼지면 이후 quad 읽기가 전부 쓰레기가 된다. */
+    /* (2) 실제 쓰기 경로 - SW-037 이후 Write는 SR을 아예 건드리지 않는다.
+     *     QE가 꺼지면 이후 quad 읽기가 전부 쓰레기가 되므로 프레임 0을 확인. */
     memset(data, 0x5AU, sizeof(data));
     s_mock.page_program_count = 0U;
+    s_mock.wrsr_frame_count   = 0U;                                  /* 카운터 리셋 */
     status = Flash_Write(0x00000000U, data, sizeof(data), FLASH_PROGRAM_SINGLE);
     assert(status == FLASH_OK);
     assert(s_mock.page_program_count >= 1U);
+    assert(s_mock.wrsr_frame_count == 0U);                           /* SR 무변경 */
     assert((s_mock.sr2[0] & FLASH_SR2_QE_WINBOND) != 0U);            /* QE 유지 */
     assert(g_flash_handle.qe_enabled);                               /* 핸들도 일치 */
 
@@ -1815,7 +1858,7 @@ int main(void)
     Test_CRCAccumulate();
     Test_DirectSPIQuadGuard();
     Test_ProtectUnprotect();
-    Test_WriteClearsBP();
+    Test_WriteKeepsProtect();
     Test_AddrModeOpcodes();
     Test_InitNoReset();
     Test_TableReadCfgGuard();

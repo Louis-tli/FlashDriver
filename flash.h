@@ -461,6 +461,11 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val);
  * @brief  Clear all block-protect (BP) bits on the active die so that
  *         program / erase cannot silently fail. Preserves QE and other bits.
  *         (SW-013 / G2)
+ *
+ *         SW-037: Flash_Write / Flash_Erase no longer call this for you.
+ *         Protection is now entirely the caller's decision: call it once
+ *         before the first program/erase, and the driver will never quietly
+ *         unlock the device behind your back.
  */
 int Flash_Unprotect(void);
 
@@ -517,12 +522,16 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 
 /**
  * @brief  Program data into Flash (Single 02h or Quad 32h).
+ *         SW-037: block protection is NOT cleared automatically. If the target
+ *         region is protected the device ignores the program and this function
+ *         still returns FLASH_OK, so call Flash_Unprotect() first.
  */
 int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
                 FLASH_PROGRAM_MODE mode);
 
 /**
  * @brief  Erase Sector (4KB), Block (32KB/64KB), or Chip.
+ *         SW-037: block protection is NOT cleared automatically; see Flash_Write.
  */
 int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode);
 
