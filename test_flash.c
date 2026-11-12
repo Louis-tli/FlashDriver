@@ -1727,6 +1727,73 @@ static void Test_ProtectSurvivesPowerCycle(void)
     printf("  - BP survives power-off (GD/Winbond/Macronix); QE re-arms. PASSED.\n\n");
 }
 
+/* SW-036: 주소 범위 검사.
+ *   칩은 범위 밖 주소를 거절하지 않는다 — 용량을 넘는 상위 주소 비트가 디코드되지
+ *   않아 배열 앞쪽으로 되돌아가고(wrap), 호출자는 FLASH_OK를 받는다. 실제 보드에서는
+ *   부트로더가 조용히 덮어써지는 경로다. 드라이버가 입구에서 막아야 한다. */
+static void Test_AddressRangeRefused(void)
+{
+    uint8_t buf[16];
+
+    printf("[TEST 33] SW-036: addresses outside the device are refused...\n");
+
+    /* GD25LQ64E = 8 MiB, single die. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86017U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_GetInfo() != NULL);
+    assert(Flash_GetInfo()->flash_size == (8U * 1024U * 1024U));
+
+    memset(buf, 0x00, sizeof(buf));
+
+    /* (1) The last byte of the array is inside and must still work. */
+    assert(Flash_Read(0x7FFFFFU, buf, 1U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_OK);
+
+    /* (2) First byte past the end, and a read that only *ends* past the end. */
+    assert(Flash_Read(0x800000U, buf, 1U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_ERR_PARAM);
+    assert(Flash_Read(0x7FFFFEU, buf, 4U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_ERR_PARAM);
+
+    /* (3) Write is refused *before* the bus is touched: a program command with a
+     *     wrapped address is exactly how the bootloader sector gets destroyed. */
+    memset(&s_xfer, 0, sizeof(s_xfer));
+    assert(Flash_Write(0x800000U, buf, 4U, FLASH_PROGRAM_SINGLE) == FLASH_ERR_PARAM);
+    assert(Flash_Write(0x7FFFFFU, buf, 2U, FLASH_PROGRAM_SINGLE) == FLASH_ERR_PARAM);
+    assert(s_xfer.frames == 0U);          /* nothing left the driver */
+
+    /* (4) Erase: the target must start inside the part. The chip aligns the
+     *     erase down to the sector, so 0x7FFFFF is a legitimate in-range call. */
+    assert(Flash_Erase(0x800000U, FLASH_ERASE_SECTOR) == FLASH_ERR_PARAM);
+    assert(Flash_Erase(0x7FFFFFU, FLASH_ERASE_SECTOR) == FLASH_OK);
+
+    /* (5) The check must not be fooled by "addr + len" overflow. */
+    memset(&s_xfer, 0, sizeof(s_xfer));
+    assert(Flash_Write(0xFFFFFFF0U, buf, 0x20U, FLASH_PROGRAM_SINGLE) == FLASH_ERR_PARAM);
+    assert(s_xfer.frames == 0U);
+    assert(Flash_Read(0xFFFFFFF0U, buf, 0x20U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_ERR_PARAM);
+
+    /* (6) Multi-die: flash_size is the total across the stack (2 x 32 MiB), so
+     *     a read may cross the die boundary at 0x2000000, while the byte after
+     *     the whole stack (0x4000000) is refused. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF6119U;                 /* W25M512JV */
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_GetInfo()->flash_size == (64U * 1024U * 1024U));
+    assert(Flash_Read(0x1FFFFF8U, buf, 16U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_OK);   /* across dies */
+    assert(Flash_Read(0x3FFFFFFU, buf, 2U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_ERR_PARAM);
+    assert(Flash_Read(0x4000000U, buf, 1U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_ERR_PARAM);
+
+    printf("  - 8 MiB part + 2-die 64 MiB stack: ends refused, no SPI frames. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1767,9 +1834,10 @@ int main(void)
     Test_BootConfigCarriesSpiClock();
     Test_GigaDeviceDensities();
     Test_ProtectSurvivesPowerCycle();
+    Test_AddressRangeRefused();
 
     printf("================================================================\n");
-    printf(" ALL 32 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 33 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

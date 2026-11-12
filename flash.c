@@ -127,6 +127,43 @@ static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
 }
 
 /******************************************************************************
+ * Helper: Reject a transfer that leaves the device (SW-036)
+ *
+ *   The chip does NOT police the address. Address bits above the capacity are
+ *   simply not decoded, so an offset past the end wraps around to the start of
+ *   the array. On a real board that means a wrong offset/len in the caller
+ *   silently programs over the first sectors (usually the bootloader) and every
+ *   call still returns FLASH_OK - the worst kind of failure: data corruption
+ *   with no error.
+ *
+ *   Two compares here turn that into FLASH_ERR_PARAM. The subtraction form is
+ *   deliberate: "addr + len" would overflow for addresses near 0xFFFFFFFF and
+ *   pass a naive check.
+ ******************************************************************************/
+static int Flash_CheckRange(uint32_t addr, uint32_t len)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+    if (info == NULL) {
+        return FLASH_ERR_PARAM;
+    }
+
+    if (len == 0U) {
+        /* Nothing moves, so no address can be out of range. */
+        return FLASH_OK;
+    }
+
+    if (addr >= info->flash_size) {
+        return FLASH_ERR_PARAM;
+    }
+
+    if (len > (info->flash_size - addr)) {
+        return FLASH_ERR_PARAM;
+    }
+
+    return FLASH_OK;
+}
+
+/******************************************************************************
  * Helper: Resolve the active addressing mode (boot-config override or default)
  ******************************************************************************/
 static FLASH_ADDR_MODE Flash_ResolveAddrMode(uint8_t cfg_mode, const FLASH_INFO *info)
@@ -1084,6 +1121,13 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         return FLASH_ERR_PARAM;
     }
 
+    /* SW-036: an out-of-range offset is not rejected by the chip - it wraps and
+     * reads the wrong sectors without any error. Refuse it here instead. */
+    status = Flash_CheckRange(addr, total_bytes);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
     const FLASH_READ_CFG *read_cfg = &info->read_cfg[mode];
     uint8_t *p_buf = (uint8_t *)buf;
     uint32_t remaining = total_bytes;
@@ -1174,6 +1218,14 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
         return FLASH_ERR_PARAM;
+    }
+
+    /* SW-036: refuse the write before any bus traffic. A programming command
+     * with an address above the capacity silently lands at the start of the
+     * array (address wrap), which is how a bootloader gets destroyed. */
+    const int range_status = Flash_CheckRange(addr, len);
+    if (range_status != FLASH_OK) {
+        return range_status;
     }
 
     const uint8_t prog_cmd = Flash_CmdProgram(mode, g_flash_handle.addr_mode);
@@ -1302,10 +1354,17 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return FLASH_OK;
     }
 
-    /* Sector / Block Erase handling */
+    /* Sector / Block Erase handling.
+     * SW-036: the target must start inside the device. A chip erase ignores
+     * addr and was already handled above, so this only covers sector/block. */
+    int status = Flash_CheckRange(addr, 1U);
+    if (status != FLASH_OK) {
+        return status;
+    }
+
     uint8_t target_die = 0U;
     uint32_t die_addr = 0U;
-    int status = Flash_ResolveDie(addr, &target_die, &die_addr);
+    status = Flash_ResolveDie(addr, &target_die, &die_addr);
     if (status != FLASH_OK) {
         return status;
     }

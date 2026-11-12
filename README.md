@@ -105,7 +105,7 @@ void app_start(void)
 ├── flash_spi.c      # Low-Level SPI 드라이버 (Transact 엔진 + HW 추상화 스텁)
 ├── flash_xfer.h     # 전송 지오메트리(단위/크기/정렬) 공용 인터페이스 (SW-016)
 ├── flash_xfer.c     # ReadUnit 해석 + 32bit 오버플로 가드 + 정렬 검사 (공용)
-└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (32 suites)
+└── test_flash.c     # 전 기능 시뮬레이션 및 C99 표준 검증 테스트 슈트 (33 suites)
 ```
 
 ---
@@ -125,7 +125,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 > **ARMCC (ARM Compiler 5) 컴파일 시 플래그**: `armcc --c99 -c flash.c`
 > **ARMCLANG (ARM Compiler 6) 컴파일 시 플래그**: `armclang --target=arm-arm-none-eabi -mcpu=cortex-m0 -std=c99 -c flash.c`
 
-### 테스트 통과 항목 (32 suites):
+### 테스트 통과 항목 (33 suites):
 1. **Table Lookup**: 9종 Flash JEDEC ID 및 파라미터 매칭, `FLASH_IDX` 순서 일치
 2. **Init & Bus Probing**: 플로팅 버스 (0x000000 / 0xFFFFFF) NO_CONNECT 판별 및 자동 QE 활성화
 3. **GD25LQ64E Status Write**: 2-Byte Status Register 동시 쓰기 시퀀스
@@ -158,6 +158,7 @@ gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash
 30. **부팅 클럭은 설정 블록이 정한다 (SW-021)**: `spi_hz`=24 MHz면 정확히 그 값으로 상승, 24 B 구 블록(0xFFFF_FFFF)이나 200 MHz 같은 비정상 값이면 **10 MHz 유지 + 정상 부팅**
 31. **GigaDevice 밀도 3종 (SW-030)**: GD25LQ**16E/32E/64E**를 같은 테스트로 돌려 — 선택된 행·`flash_size`·`addr_bytes`=3, SR2.QE / SR1.BP4 / 16비트 `01h`(3바이트 프레임) / 3바이트 주소(총 4바이트 송신)까지 확인하고, 표에 없는 `0xC86018`은 여전히 거부
 32. **보호는 전원을 꺼도 남는다 (SW-035)**: 목(mock)에 **비휘발성/휘발성 두 벌**의 상태 레지스터를 두고 전원 차단(`Mock_PowerCycle`)을 흉내 냄 — `Flash_Protect()`가 `06h`로 arm되어 BP가 **전원 재투입 후에도 유지**되고, QE는 `50h`로만 써서 **부팅 때마다 다시 켜지는 휘발성**임을 GD25LQ64E·W25Q128JW·MX25L512 세 부품에서 확인. 보호 전에 BUSY가 남아 있어도 먼저 기다린 뒤 스냅샷을 뜨므로 WIP가 상태값에 섞이지 않음
+33. **용량 밖 주소는 거부한다 (SW-036)**: GD25LQ64E(8 MiB)에서 마지막 바이트 `0x7FFFFF`는 통과, `0x800000`·`0x7FFFFE`+4처럼 **끝이 넘어가는** 읽기는 `FLASH_ERR_PARAM`. 쓰기는 **버스를 건드리기 전에** 거절되어 SPI 프레임 0개, 소거는 `0x800000`만 거절(칩이 섹터로 내림 정렬). `addr+len` 오버플로(`0xFFFFFFF0`+`0x20`)도 통과 못 함. 2-다이 64 MiB(W25M512JV)에서는 `0x1FFFFF8`+16이 **다이 경계를 넘어도 정상**이고 `0x4000000`은 거절
 
 ---
 
@@ -353,6 +354,32 @@ GD25LQ 패밀리는 **용량만 다르고 명령 세트·상태 레지스터·�
 
 ---
 
+## 🚧 용량 밖 주소 거부 (SW-036)
+
+`Flash_Read` / `Flash_Write` / `Flash_Erase`는 지금까지 **주소를 검사하지 않았습니다**. `flash_size`를 읽는 코드가 `flash.c`에 한 곳도 없었기 때문입니다. 그런데 SPI NOR은 상위 주소 비트를 디코드하지 않습니다.
+
+> 8 MiB(GD25LQ64E)에 `0x801000`을 주면 칩은 `0x001000`으로 **말아서(wrap)** 받아들입니다.
+
+즉 계산 실수 하나가 **부트로더 섹터를 조용히 덮어쓰고 `FLASH_OK`를 반환**합니다. 증상이 없는 것이 가장 나쁜 증상입니다.
+
+### 수정
+
+`static int Flash_CheckRange(uint32_t addr, uint32_t len)` 하나를 두고 세 진입점에서 부릅니다.
+
+| 규칙 | 이유 |
+|------|------|
+| `len == 0` → 통과 | 기존 계약(0바이트 요청은 무해) 유지 |
+| `addr >= flash_size` → 거절 | 시작점이 이미 배열 밖 |
+| `len > flash_size - addr` → 거절 | `addr + len`을 더하지 않고 **빼서** 비교하므로 32비트 오버플로에 속지 않음 |
+| 멀티 다이 | `flash_size`는 **스택 전체 용량**이므로 `0x1FFFFF8`+16처럼 다이 경계를 넘는 읽기는 정상 통과 |
+
+호출 위치는 모두 **버스 트래픽이 생기기 전**입니다 — `Flash_Read`는 `read_cfg`를 얻기 전, `Flash_Write`는 program 명령을 고르기 전(Write Enable도 보내지 않음), `Flash_Erase`는 다이를 고르기 전. 잘못된 주소로 한 프레임도 나가지 않습니다(TEST 33이 `s_xfer.frames == 0`으로 검증).
+
+> 비용: **5,970 → 6,046 B (+76 B)** (`-Oz` 전체 유지). 검사 1개 + 호출 3곳이며, 되돌릴 수 없는 손상을 막는 값으로 봅니다.
+> 테스트 1개 추가로 **33 suites**. 역검증: `Flash_CheckRange` 호출 3곳을 지우면 TEST 33이 **line 1756**(`0x800000` 읽기)에서 즉시 실패합니다(확인 완료).
+
+---
+
 ## 📦 코드 크기 (ROM) — SW-017
 
 원칙은 **사람이 읽고 고치기 쉬운 코드**입니다. 크기는 구조를 꼬지 않고 줄일 수 있는 곳에서만 줄였습니다.
@@ -381,6 +408,7 @@ GD25LQ 패밀리는 **용량만 다르고 명령 세트·상태 레지스터·�
 > (`Flash_BootInit` + easy API 4종)으로 측정했습니다.
 > 표의 절대값은 SW-019 시점 실측이고, SW-020(+88 B)·SW-021(+24 B)·SW-030(+160 B)는 **같은 툴체인으로 이전/현재를 A/B 링크해 잰 증분**입니다.
 > SW-035(A+C)는 **실측 A/B**로 **6,076 B → 5,970 B (−106 B)** 입니다(`-Oz` 전체 유지, 같은 명령으로 HEAD와 워킹트리를 각각 빌드).
+> SW-036(주소 범위 검사)은 **5,970 → 6,046 B (+76 B)** — 안전 비용입니다.
 
 크기 우선 빌드:
 
