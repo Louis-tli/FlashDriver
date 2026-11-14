@@ -173,11 +173,13 @@ static const FLASH_VENDOR_CFG s_vendor[] =
       FLASH_FEAT_DUAL | FLASH_FEAT_QUAD,
       s_rc_nm6, s_rc_nm8 },
 
-    /* GigaDevice GD25LQ family: QE is SR2 bit 1, BP4 sits in SR2 bit 0, the
-     * 16-bit WRSR form (01h + 2 bytes) is mandatory and the volatile SR
-     * write-enable (50h) is supported. Same silicon for 16/32/64Mb. */
+    /* GigaDevice: QE is SR2 bit 1 and BP4 is SR1 bit 6 on BOTH families -
+     * verified in GD25Q32E Rev1.5 Table 6/7 and GD25LQ32E Rev1.4 Table 5/6.
+     * What the families do NOT share is the WRSR frame, so that flag is
+     * decided per part from the memory-type byte below, not here. The
+     * volatile SR write-enable (50h) and the read profile are common. */
     { 0xC8U, 2U, 1U,
-      FLASH_FEAT_DUAL | FLASH_FEAT_QUAD | FLASH_FEAT_STATUS_2BYTE_WRITE |
+      FLASH_FEAT_DUAL | FLASH_FEAT_QUAD |
       FLASH_FEAT_VSR_WREN | FLASH_FEAT_BP4,
       s_rc_gd6, s_rc_gd6 }
 };
@@ -291,6 +293,29 @@ const FLASH_INFO *Flash_FindDevice(uint32_t jedec_id)
      * than to the manufacturer alone. */
     if (((jedec_id >> 16) == 0xEFU) && (size > FLASH_16MB)) {
         s_device.features = (uint16_t)(s_device.features | FLASH_FEAT_SR3_ADDR_MODE);
+    }
+
+    /* SW-043: GigaDevice's 3V (GD25Q, type byte 0x40) and 1.8V (GD25LQ, type
+     * byte 0x60) families share density codes, QE position and BP4, but not the
+     * WRSR frame:
+     *   GD25Q32E Rev1.5 7.4  - "For command code of 01H / 31H / 11H, the Status
+     *     Register bits S7~S0 / S15~S8 / S23~S16 would be written. CS# must be
+     *     driven high after the eighth bit of the data byte has been latched
+     *     in." One register per frame, 8 bits each.
+     *   GD25LQ32E Rev1.4 7.4 - "CS# must be driven high after the eighth or
+     *     sixteen bit ... If CS# is driven high after eighth bit of the data
+     *     byte, the alterable bits in Status Register-2 (S15~S8) will be
+     *     cleared to 0." 16 bits are mandatory; an 8-bit frame silently eats QE.
+     * The type byte is the only thing that tells the two apart, so the coupled
+     * 16-bit flag goes to the LQ type alone. Every other GigaDevice type keeps
+     * the standard one-byte-per-register path, which is what its datasheet
+     * family documents. */
+    if ((jedec_id >> 16) == 0xC8U) {
+        const uint8_t mem_type = (uint8_t)((jedec_id >> 8) & 0xFFU);
+        if (mem_type == 0x60U) {
+            s_device.features = (uint16_t)(s_device.features |
+                                           FLASH_FEAT_STATUS_2BYTE_WRITE);
+        }
     }
 
     s_device.die_count  = die_count;

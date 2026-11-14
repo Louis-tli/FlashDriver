@@ -244,7 +244,10 @@ typedef enum
 #define FLASH_FEAT_QUAD                 (1U << 1)
 #define FLASH_FEAT_4BYTE_ADDR           (1U << 2)
 #define FLASH_FEAT_MULTI_DIE            (1U << 3)
-#define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* Writes SR1 and SR2 together (GD25LQ64E) */
+#define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* One 01h frame carries SR1 and SR2
+                                                         (GigaDevice GD25LQ family only:
+                                                         16 bits mandatory, 8 bits clears
+                                                         SR2 - SW-043) */
 #define FLASH_FEAT_VSR_WREN             (1U << 5)   /* Supports 50h Volatile SR Write Enable */
 #define FLASH_FEAT_BP4                  (1U << 6)   /* SR1 bit6 is a 5th block-protect bit,
                                                          NOT the quad-enable bit */

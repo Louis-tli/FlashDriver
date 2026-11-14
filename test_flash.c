@@ -59,6 +59,17 @@ typedef struct
      * that cannot address SR2 on its own. */
     uint32_t wrsr1_frame_bytes;
 
+    /* SW-043: the most recent status-register write frame (01h/31h/11h) as it
+     * went out, so a test can prove WHICH family path was taken. */
+    uint8_t  last_wrsr_opcode;
+    uint32_t last_wrsr_tx_len;
+
+    /* SW-043: set when the part on the bus is a GigaDevice 3V (GD25Q) device,
+     * which executes 01h with exactly one data byte. A wider frame is not
+     * executed at all (datasheet 7.4), so the extra byte must not reach SR2 -
+     * that is the failure a read-back has to catch. */
+    bool     wrsr_drop_extra_byte;
+
     /* SW-037: how many status-register write frames (01h/31h/11h) have been
      * seen on the bus at all. Program and erase must NOT add to this count:
      * that is how the test proves the driver no longer unlocks the chip. */
@@ -204,6 +215,17 @@ static bool Mock_Uses16BitWrsr(void)
            ((info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U);
 }
 
+/* SW-043: how the SILICON behaves, decided from the raw ID and not from the
+ * driver's table - otherwise a wrong table would make its own test pass.
+ * GigaDevice memory-type byte 0x60 = GD25LQ (1.8V, 16-bit 01h mandatory);
+ * 0x40 = GD25Q (3V, one register per 01h/31h/11h frame). */
+static bool Mock_PartRejectsWideWrsr(void)
+{
+    const uint32_t id = s_mock.mock_jedec_id & 0x00FFFFFFU;
+
+    return ((id >> 16) == 0xC8U) && (((id >> 8) & 0xFFU) != 0x60U);
+}
+
 /* Override weak SPI functions for test verification */
 void Flash_SPI_Init(void)
 {
@@ -332,6 +354,13 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
                 s_mock.cmd_byte_index++;
             }
             else if (s_mock.cmd_byte_index == 2U) {
+                if (s_mock.wrsr_drop_extra_byte) {
+                    /* SW-043: GigaDevice 3V part. A 01h frame is one data byte
+                     * wide there, so the command is not executed - SR2 keeps
+                     * its old value and the read-back reports the failure. */
+                    s_mock.cmd_byte_index++;
+                    break;
+                }
                 s_mock.sr2[s_mock.current_die] = tx_byte;
                 if (!s_mock.wrsr_volatile) {
                     s_mock.nv_sr2[s_mock.current_die] = tx_byte;   /* SW-035 */
@@ -407,6 +436,21 @@ void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
         s_xfer.last_payload_len = xfer->data_len;
         s_xfer.last_payload_tx_len = xfer->tx_len;
         s_xfer.last_data_payload_len = xfer->data_len;
+    }
+
+    /* SW-043: remember which status-write frame went out, and on a GigaDevice
+     * 3V part make the second data byte a no-op. The datasheet says such a
+     * command is not executed, so SR2/QE never changes and only the read-back
+     * can notice - modelling it any other way would hide the very failure the
+     * test is about. */
+    if ((xfer->tx_buf != NULL) && (xfer->tx_len > 0U) &&
+        ((xfer->tx_buf[0] == F_CMD_WRSR1) || (xfer->tx_buf[0] == F_CMD_WRSR2) ||
+         (xfer->tx_buf[0] == F_CMD_WRSR3))) {
+        s_mock.last_wrsr_opcode = xfer->tx_buf[0];
+        s_mock.last_wrsr_tx_len = xfer->tx_len;
+        s_mock.wrsr_drop_extra_byte = (xfer->tx_buf[0] == F_CMD_WRSR1) &&
+                                      (xfer->tx_len > 2U) &&
+                                      Mock_PartRejectsWideWrsr();
     }
 
     Flash_SPI_CS_Low();
@@ -1997,6 +2041,96 @@ static void Test_Sr3AddressMode(void)
     printf("  - 16 MB part without SR3 bits: FLASH_ERR_UNSUPPORTED. PASSED.\n\n");
 }
 
+/******************************************************************************
+ * [TEST 35] SW-043: GigaDevice 3V and 1.8V parts do not share a WRSR frame
+ *
+ * Both families put QE at SR2 bit 1 and BP4 at SR1 bit 6, and both use the
+ * same density byte, so the old vendor-wide "16-bit WRSR" flag looked right
+ * for every GigaDevice part. It is only right for GD25LQ:
+ *
+ *   GD25Q32E  Rev1.5 7.4 - 01H / 31H / 11H each carry ONE status byte, and
+ *                          "CS# must be driven high after the eighth bit ...
+ *                          Otherwise, the WRSR command is not executed."
+ *   GD25LQ32E Rev1.4 7.4 - 16 bits are mandatory; stopping at 8 clears SR2.
+ *
+ * So a GD25Q32E (0xC84016) that receives a 3-byte 01h frame never turns QE on:
+ * the init read-back fails with FLASH_ERR_WRITE_FAIL and the part is unusable.
+ * The memory-type byte (0x40 vs 0x60) is the only thing that tells them apart.
+ ******************************************************************************/
+static void Test_GdWrsrFamilySplit(void)
+{
+    uint8_t buf[8];
+
+    printf("[TEST 35] SW-043: GigaDevice 3V writes one status byte per frame...\n");
+
+    /* --- 1. GD25Q32E (3V): QE must be turned on through 31h, one byte wide --- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC84016U;             /* GD25Q32E: C8 40 16 */
+    Mock_SetStatus(0x1CU, 0x00U, 0x00U);          /* BP bits set, QE off */
+    assert(Flash_Init() == FLASH_OK);
+    assert(g_flash_handle.info != NULL);
+    assert(g_flash_handle.info->flash_size == 4UL * 1024UL * 1024UL);
+    assert(g_flash_handle.info->addr_bytes == 3U);
+
+    /* The family flags that ARE shared must survive the split. */
+    assert((g_flash_handle.info->features & FLASH_FEAT_BP4) != 0U);
+    assert((g_flash_handle.info->features & FLASH_FEAT_VSR_WREN) != 0U);
+    assert((g_flash_handle.info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) == 0U);
+
+    /* QE went in through 31h with exactly one data byte. */
+    assert(s_mock.last_wrsr_opcode == F_CMD_WRSR2);
+    assert(s_mock.last_wrsr_tx_len == 2U);        /* opcode + SR2 */
+    assert((s_mock.sr2[0] & 0x02U) != 0U);        /* QE now on */
+    assert(s_mock.sr1[0] == 0x1CU);               /* SR1 untouched */
+    assert(g_flash_handle.qe_enabled);
+    printf("  - GD25Q32E boot: QE via %02Xh, 2-byte frame, SR1 untouched. PASSED.\n",
+           (unsigned)F_CMD_WRSR2);
+
+    /* --- 2. Protect on the same part: 01h must stay one data byte wide ------ */
+    assert(Flash_Protect(0x02U) == FLASH_OK);     /* mask bit1 -> BP1 */
+    assert(s_mock.last_wrsr_opcode == F_CMD_WRSR1);
+    assert(s_mock.last_wrsr_tx_len == 2U);        /* opcode + SR1 only */
+    assert((s_mock.sr1[0] & 0x08U) != 0U);        /* BP1 latched */
+    assert((s_mock.nv_sr1[0] & 0x08U) != 0U);     /* durable copy too */
+    assert((s_mock.sr2[0] & 0x02U) != 0U);        /* QE survived the SR1 write */
+    assert(s_mock.wrsr1_frame_bytes == 2U);
+    printf("  - protect: 01h carries SR1 alone, QE untouched. PASSED.\n");
+
+    /* --- 3. Still a 3-byte address part ------------------------------------ */
+    memset(buf, 0, sizeof(buf));
+    assert(Flash_Read(0x00000010U, buf, 8U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, 0U) == FLASH_OK);
+    assert(s_xfer.last_first_tx == F_CMD_READ);
+    assert(s_xfer.last_tx_len == 4U);             /* opcode + 3 address bytes */
+
+    /* --- 4. GD25LQ32E (1.8V) keeps the coupled 16-bit frame ---------------- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86016U;
+    Mock_SetStatus(0x1CU, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert((g_flash_handle.info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U);
+    assert(s_mock.last_wrsr_opcode == F_CMD_WRSR1);
+    assert(s_mock.last_wrsr_tx_len == 3U);        /* opcode + SR1 + SR2 */
+    assert((s_mock.sr2[0] & 0x02U) != 0U);
+    assert(s_mock.sr1[0] == 0x1CU);               /* echoed back unchanged */
+    printf("  - GD25LQ32E boot: 01h carries SR1+SR2 in one 16-bit frame. PASSED.\n");
+
+    /* --- 5. The split follows the TYPE byte, not the density --------------- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC86018U;             /* GD25LQ128E */
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    assert(s_mock.last_wrsr_tx_len == 3U);        /* still 16-bit at 16 MB */
+
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xC84116U;             /* unknown GD type 0x41 */
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);             /* 4 MB, 3-byte, one-byte WRSR */
+    assert((g_flash_handle.info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) == 0U);
+    assert(s_mock.last_wrsr_tx_len == 2U);
+    printf("  - LQ stays 16-bit at 16 MB; unknown type 0x41 defaults to 8-bit. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -2039,9 +2173,10 @@ int main(void)
     Test_ProtectSurvivesPowerCycle();
     Test_AddressRangeRefused();
     Test_Sr3AddressMode();
+    Test_GdWrsrFamilySplit();
 
     printf("================================================================\n");
-    printf(" ALL 34 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 35 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

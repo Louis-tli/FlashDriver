@@ -680,3 +680,59 @@ ADS 값과 무관하게 동작합니다. 그래서 **모드가 3바이트로 떠
 | ROM (9파일, −Oz, .text+.rodata) | 5,394 → **5,530 B (+136 B)** |
 | RAM | **+2 B** (`sr3`, `sr3_valid`) |
 | 역검증 | 가드 제거 → line 1970 실패 / SR3 읽기 제거 → line 1935 실패 |
+
+---
+
+## SW-043 — GigaDevice 3V와 1.8V는 상태 레지스터 쓰기 폭이 다릅니다
+
+### 무엇이 문제였나
+
+표는 `0xC8`(GigaDevice) 벤더 전체에 `FLASH_FEAT_STATUS_2BYTE_WRITE`를 주고 있었습니다.
+그래서 GD25Q32E(`C8 40 16`, 3.0V 4MB)에서도 `01h` 프레임이 **3바이트**(opcode + SR1 + SR2)로 나갔습니다.
+
+데이터시트 원문:
+
+- GD25Q32E Rev1.5 §7.4 — `01H / 31H / 11H` 각각 **8비트**:
+  "CS# must be driven high after the eighth bit of the data byte has been latched in.
+  Otherwise, the WRSR command is not executed."
+- GD25LQ32E Rev1.4 §7.4 — **8 또는 16비트**:
+  "If CS# is driven high after the eighth bit of the data byte, the alterable bits in
+  Status Register-2 (S15~S8) will be cleared to 0."
+
+즉 3V 부품은 16비트 프레임을 **실행하지 않고**, 1.8V 부품은 8비트에서 끊으면 **SR2를 지웁니다.**
+두 가족을 같은 규칙으로 다룰 수 없습니다.
+
+### 두 가족을 구분하는 값
+
+JEDEC ID의 **memory type 바이트**(`(id >> 8) & 0xFF`)입니다.
+
+- `0x60` = GD25LQ 계열(1.8V) → 16비트 결합 프레임
+- `0x40` = GD25Q 계열(3.0V) → 레지스터마다 8비트 (`01h`/`31h`/`11h`)
+
+밀도 코드(`0x15/0x16/0x17/0x18`)·QE 위치(SR2 bit1)·BP4(SR1 bit6)·50h volatile WREN은
+두 가족이 **같습니다.** 그래서 표에서 지운 것은 플래그 하나뿐이고, 나머지는 그대로입니다.
+
+### 무엇을 바꿨나
+
+1. `flash_table.c` — `0xC8` 벤더 행에서 `FLASH_FEAT_STATUS_2BYTE_WRITE`를 **제거**.
+2. `flash_table.c` — 조회 후처리에서 `jedec_id >> 16 == 0xC8`이고 type 바이트가 `0x60`일 때만
+   플래그를 **부여**. `0x40`과 모르는 type은 8비트(= 데이터시트 기본형)로 남습니다.
+3. `flash.h` — 플래그 주석을 "GD25LQ 계열 전용, 8비트로 끊으면 SR2가 지워짐"으로 정정.
+4. `test_flash.c` — TEST 35. mock이 **실리콘처럼** 8비트 전용 부품의 2번째 데이터 바이트를
+   무시하도록 모델링(표를 참조하지 않고 raw ID로 판정 → 표가 틀리면 테스트도 같이 틀리는 일 방지).
+
+### 결과
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **35/35 PASS** (TEST 35: Q32E 부팅 `31h` 2바이트 / protect `01h` 2바이트 / LQ32E `01h` 3바이트 / LQ128E 유지 / 미지 type 0x41 8비트) |
+| strict 게이트 (24옵션) | 51 → **51**, diff 0 (신규 경고 0) |
+| ROM (9파일, `-Oz`, `.text+.rodata`) | 5,530 → **5,570 B (+40 B)** |
+| RAM | **0 B** (테이블 후처리만) |
+| 역검증 | 벤더 일괄 16비트 플래그를 되살리면 `test_flash.c:2070` **`Flash_Init() == FLASH_OK` 실패** (= 실제 증상: QE read-back 실패로 부팅 불가) |
+
+### 남는 것
+
+- GD25Q16/GD25Q64/GD25Q128도 type `0x40`이므로 같은 8비트 경로를 탑니다(데이터시트 §7.4 동일 문장).
+- 새 GigaDevice 가족(GD25B/GD25W 등)을 추가할 때는 **type 바이트와 WRSR 폭 한 줄**만 확인하면 됩니다.
+- 3바이트/4바이트 주소 모드(SW-042)와는 독립입니다. 이 변경은 상태 레지스터 쓰기 폭만 다룹니다.
