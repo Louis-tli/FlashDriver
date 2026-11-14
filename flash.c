@@ -193,6 +193,25 @@ static int Flash_ApplyDieConfig(void)
         (void)Flash_WaitBusy(10000U);
     }
 
+    /* SW-042: confirm the address mode instead of assuming it.
+     *
+     *   W25Q256JV keeps the live mode in SR3.ADS and the power-up mode in
+     *   SR3.ADP (datasheet 7.1.5 / 7.1.6). Read it AFTER the optional B7h, so
+     *   ADS describes the mode this die is actually in right now.
+     *
+     *   Every die of a stack has its own status registers, so this runs once
+     *   per die from Flash_ApplyProductInit(); the handle keeps the last read,
+     *   which is the active die's answer.
+     *
+     *   A part without the bits is skipped, never guessed at. */
+    if ((info->features & FLASH_FEAT_SR3_ADDR_MODE) != 0U) {
+        const int sr_status = Flash_ReadStatus(3U, &g_flash_handle.sr3);
+        if (sr_status != FLASH_OK) {
+            return sr_status;
+        }
+        g_flash_handle.sr3_valid = true;
+    }
+
     /* Verify / enable Quad Mode on this die */
     if ((info->features & FLASH_FEAT_QUAD) != 0U) {
         return Flash_EnableQuad();
@@ -350,6 +369,26 @@ static int Flash_ApplyHandleConfig(const FLASH_INFO *p_info,
     g_flash_handle.current_die = 0U;
     g_flash_handle.qe_enabled  = false;
     g_flash_handle.last_crc    = 0U;
+    g_flash_handle.sr3         = 0U;
+    g_flash_handle.sr3_valid   = false;
+
+    /* SW-042: a 4-Byte part cannot be driven in 3-Byte mode.
+     *
+     *   The driver has no Extended Address Register (C8h) path, so in 3-Byte
+     *   mode every address above 16 MB is silently dropped by the chip and wraps
+     *   to the bottom of the array - while Flash_CheckRange() still calls the
+     *   range legal, because it only compares against flash_size. That is data
+     *   corruption with a FLASH_OK return.
+     *
+     *   Refusing the combination costs one compare and turns the worst failure
+     *   mode into a boot-time error the integrator can see. The decision is made
+     *   here (not in the config validator) because the device is only known
+     *   after the JEDEC probe. */
+    if ((g_flash_handle.addr_mode == FLASH_ADDR_3BYTE) && (p_info->addr_bytes == 4U)) {
+        g_flash_handle.info  = NULL;   /* leave nothing half-configured behind */
+        g_flash_handle.state = FLASH_STATE_ERROR;
+        return FLASH_ERR_PARAM;
+    }
 
     /* Non-common configuration has to run once per die (QE + 4-byte mode) */
     const int status = Flash_ApplyProductInit();
@@ -1034,6 +1073,35 @@ int Flash_SelectDie(uint8_t die_idx)
 
     Flash_DelayUs(50U);         /* die-select settle (SW-014: was 500 loops) */
     g_flash_handle.current_die = die_idx;
+
+    return FLASH_OK;
+}
+
+/******************************************************************************
+ * Public API: Flash_GetAddrModeState (SW-042)
+ *
+ *   Decode the two address-mode bits out of the SR3 value captured during
+ *   bring-up. Bits are reported one per argument so the caller never has to
+ *   know the register layout; passing NULL for either one is allowed.
+ *
+ *   Returning FLASH_ERR_UNSUPPORTED (instead of 0/0) is deliberate: "this part
+ *   has no ADS/ADP" and "this part is in 3-Byte mode" must not look the same to
+ *   the caller.
+ ******************************************************************************/
+int Flash_GetAddrModeState(uint8_t *p_ads, uint8_t *p_adp)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+
+    if ((info == NULL) || (g_flash_handle.sr3_valid == false)) {
+        return FLASH_ERR_UNSUPPORTED;
+    }
+
+    if (p_ads != NULL) {
+        *p_ads = (uint8_t)(((g_flash_handle.sr3 & FLASH_SR3_ADS) != 0U) ? 1U : 0U);
+    }
+    if (p_adp != NULL) {
+        *p_adp = (uint8_t)(((g_flash_handle.sr3 & FLASH_SR3_ADP) != 0U) ? 1U : 0U);
+    }
 
     return FLASH_OK;
 }

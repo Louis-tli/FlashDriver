@@ -125,6 +125,8 @@ static void Mock_Reset(void)
     g_flash_handle.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
     g_flash_handle.locked        = false;
     g_flash_handle.last_crc      = 0U;
+    g_flash_handle.sr3           = 0U;
+    g_flash_handle.sr3_valid     = false;
 }
 
 /* Set the status registers for both dies (keeps old single-value call sites simple). */
@@ -1901,6 +1903,100 @@ static void Test_AddressRangeRefused(void)
     printf("  - 8 MiB part + 2-die 64 MiB stack: ends refused, no SPI frames. PASSED.\n\n");
 }
 
+/*============================================================================
+ * TEST 34 (SW-042): the address mode is read back from SR3, not assumed,
+ * and a 4-Byte part is never driven in 3-Byte mode.
+ *
+ *   W25Q256JV 7.1.5/7.1.6 puts the live mode in SR3.ADS (bit0) and the power-up
+ *   mode in SR3.ADP (bit1). Four situations matter:
+ *     1. powered up in 4-Byte mode (ADP=1, ADS=1)  -> reported as 1/1
+ *     2. powered up in 3-Byte mode (ADP=0, ADS=0)  -> still usable, because the
+ *        driver sends the dedicated 4-Byte opcodes (0x0C/0x12/0x21) that ignore
+ *        the mode setting (6.1.4)
+ *     3. someone forces 3-Byte mode on a 32 MB die -> refused instead of quietly
+ *        wrapping every address above 16 MB
+ *     4. a 16 MB part has no ADS/ADP       -> UNSUPPORTED, not a fake 0/0
+ *============================================================================*/
+static void Test_Sr3AddressMode(void)
+{
+    FLASH_BOOT_CONFIG cfg;
+    uint32_t          buf[4];
+    uint8_t           ads = 0xFFU;
+    uint8_t           adp = 0xFFU;
+
+    printf("[TEST 34] SW-042: SR3 reports ADS/ADP, 3-Byte mode refused on 4-Byte parts\n");
+
+    /* --- 1. W25Q256JV that came up in 4-Byte mode: ADS=1, ADP=1 ------------- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x02U, 0x03U);          /* SR3 = ADP|ADS */
+    assert(Flash_Init() == FLASH_OK);
+    assert(g_flash_handle.addr_mode == FLASH_ADDR_4BYTE_OPCODE);
+    assert(Flash_GetAddrModeState(&ads, &adp) == FLASH_OK);
+    assert(ads == 1U);
+    assert(adp == 1U);
+    printf("  - 4-Byte boot (SR3=0x03): ADS=1 ADP=1, method A opcodes. PASSED.\n");
+
+    /* --- 2. Same part that came up in 3-Byte mode: readable either way ------ */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);          /* SR3 = 0: 3-Byte mode */
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_GetAddrModeState(&ads, &adp) == FLASH_OK);
+    assert(ads == 0U);
+    assert(adp == 0U);
+    /* Above 16 MB the part needs a 4-Byte opcode; the driver sends one anyway. */
+    assert(Flash_Read(0x01000010U, buf, 1U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_WORD, 0U) == FLASH_OK);
+    assert(s_xfer.last_first_tx == F_CMD_READ_4B);
+    assert(s_xfer.last_tx_len == 5U);        /* 1 command + 4 address bytes */
+    printf("  - 3-Byte boot (SR3=0x00): still uses 0x%02X + 4 address bytes. PASSED.\n",
+           (unsigned)F_CMD_READ_4B);
+
+    /* --- 3. Forced 3-Byte mode on a 32 MB die must be refused --------------- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4019U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.magic         = FLASH_BOOT_CFG_MAGIC;
+    cfg.jedec_expect  = 0xEF4019U;
+    cfg.model         = (uint32_t)FLASH_MODEL_UNKNOWN;
+    cfg.features      = (uint8_t)FLASH_FEAT_QUAD;
+    cfg.sfc_page_size = SFC_DEFAULT_PAGE_SIZE_4K;
+    cfg.addr_mode     = (uint8_t)FLASH_ADDR_3BYTE;
+    cfg.crc           = Flash_ConfigCrc(&cfg);
+    memcpy(s_mock.config_buf, &cfg, sizeof(cfg));
+    s_mock.config_len = (uint32_t)sizeof(cfg);
+    assert(Flash_BootInit(0x00000000U) == FLASH_ERR_PARAM);
+    assert(g_flash_handle.state == FLASH_STATE_ERROR);
+    assert(g_flash_handle.info == NULL);
+    printf("  - forced 3-Byte on 32 MB: FLASH_ERR_PARAM (no wrap, no FLASH_OK). PASSED.\n");
+
+    /* --- 4. The same forced mode on a 16 MB part stays legal ---------------- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF6018U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    cfg.jedec_expect = 0xEF6018U;
+    cfg.crc          = Flash_ConfigCrc(&cfg);
+    memcpy(s_mock.config_buf, &cfg, sizeof(cfg));
+    s_mock.config_len = (uint32_t)sizeof(cfg);
+    assert(Flash_BootInit(0x00000000U) == FLASH_OK);
+    assert(g_flash_handle.addr_mode == FLASH_ADDR_3BYTE);
+    printf("  - forced 3-Byte on 16 MB: accepted, as it must be. PASSED.\n");
+
+    /* --- 5. A part with no ADS/ADP says so instead of inventing bits -------- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF6018U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    assert(Flash_Init() == FLASH_OK);
+    ads = 0xEEU;                          /* sentinels: must survive untouched */
+    adp = 0xEEU;
+    assert(Flash_GetAddrModeState(&ads, &adp) == FLASH_ERR_UNSUPPORTED);
+    assert(ads == 0xEEU);
+    assert(adp == 0xEEU);
+    printf("  - 16 MB part without SR3 bits: FLASH_ERR_UNSUPPORTED. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -1942,9 +2038,10 @@ int main(void)
     Test_GigaDeviceDensities();
     Test_ProtectSurvivesPowerCycle();
     Test_AddressRangeRefused();
+    Test_Sr3AddressMode();
 
     printf("================================================================\n");
-    printf(" ALL 33 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 34 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

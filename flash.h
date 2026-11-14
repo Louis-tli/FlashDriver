@@ -219,6 +219,24 @@ typedef enum
 #define FLASH_SR2_QE_WINBOND            (1U << 1)   /* Quad Enable for Winbond/GD */
 
 /******************************************************************************
+ * Status Register 3 Bit Masks (Winbond 4-Byte parts: W25Q256JV / W25Q512JV)
+ *
+ *   W25Q256JV datasheet 7.1.5 / 7.1.6:
+ *     ADS (S16, read only)  - the address mode the die is in RIGHT NOW.
+ *                             "When ADS=0, the device is in the 3-Byte Address
+ *                              Mode, when ADS=1 ... 4-Byte Address Mode."
+ *     ADP (S17, NV writable) - the mode the die enters at the NEXT power-up,
+ *                             "only writable by the non-volatile Write Status
+ *                              sequence (06h + 11h)". Factory default is 0.
+ *
+ *   The driver does not have to change them (it always uses the dedicated
+ *   4-Byte opcodes, which work in either mode - 6.1.4), but it should CONFIRM
+ *   them instead of assuming, which is what SW-042 does.
+ ******************************************************************************/
+#define FLASH_SR3_ADS                   (1U << 0)   /* Current address mode (read only) */
+#define FLASH_SR3_ADP                   (1U << 1)   /* Power-up address mode (NV) */
+
+/******************************************************************************
  * Feature Flags (Bitmask)
  ******************************************************************************/
 #define FLASH_FEAT_NONE                 (0x00U)
@@ -230,6 +248,9 @@ typedef enum
 #define FLASH_FEAT_VSR_WREN             (1U << 5)   /* Supports 50h Volatile SR Write Enable */
 #define FLASH_FEAT_BP4                  (1U << 6)   /* SR1 bit6 is a 5th block-protect bit,
                                                          NOT the quad-enable bit */
+#define FLASH_FEAT_SR3_ADDR_MODE        (1U << 7)   /* SR3 carries ADS/ADP, so the
+                                                         address mode can be confirmed
+                                                         instead of assumed (SW-042) */
 
 /******************************************************************************
  * JEDEC ID / Family Matching
@@ -379,6 +400,8 @@ typedef struct
     uint16_t            sfc_page_size;      /* SFC DMA page size: 2048 or 4096 */
     bool                locked;             /* Selection locked after boot (immutable) */
     uint32_t            last_crc;           /* Accumulated CRC of last Flash_Read */
+    uint8_t             sr3;                /* Last Status Register-3 read (SW-042) */
+    bool                sr3_valid;          /* True once a die has answered 15h */
 } FLASH_HANDLE;
 
 /******************************************************************************
@@ -522,6 +545,19 @@ int Flash_EnableQuad(void);
  * @brief  Select active die on multi-die stacked chips (W25M512).
  */
 int Flash_SelectDie(uint8_t die_idx);
+
+/**
+ * @brief  Report the address-mode state decoded from Status Register-3 (SW-042).
+ *
+ *         Only parts with FLASH_FEAT_SR3_ADDR_MODE (Winbond 4-Byte devices:
+ *         W25Q256JV, W25Q512JV, each die of the W25M512 stack) have these bits;
+ *         everywhere else the call returns FLASH_ERR_UNSUPPORTED and writes
+ *         nothing, rather than inventing a value from an undefined register.
+ *
+ * @param  p_ads:  1 = the die is in 4-Byte Address Mode right now (NULL ok)
+ * @param  p_adp:  1 = the die will power up in 4-Byte Address Mode (NULL ok)
+ */
+int Flash_GetAddrModeState(uint8_t *p_ads, uint8_t *p_adp);
 
 /**
  * @brief  Read data from Flash (direct SPI or SFC Memory-Mapped DMA).

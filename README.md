@@ -619,3 +619,64 @@ ROM이 −12바이트 줄어든 것은 덤이고, 진짜 이득은 **"용량 추
 - 역검증 ① `0xEF4020` 예외 행을 지우면 → **TEST 1 line 472** 즉시 실패
 - 역검증 ② 16MB 경계 규칙을 3바이트 고정으로 바꾸면 → **line 638** 실패
 - ROM: `romsize.sh` 6,030 → **6,018 B**
+
+---
+
+## 🔐 4바이트 모드 확인 — SR3의 ADS/ADP (SW-042)
+
+### 무엇이 문제였나
+
+W25Q256JV(32MB)는 **16MB를 넘는 주소부터는 4바이트 주소**가 필요합니다. 그런데 설정에서
+3바이트를 강제하면 드라이버는 그것을 거절하지 않고 3바이트 주소를 그대로 보냈습니다.
+
+```text
+cfg.addr_mode = FLASH_ADDR_3BYTE   (32MB 부품)
+  → Flash_ResolveAddrMode()  : 3바이트 선택 (거절 없음)
+  → Flash_CheckRange()       : flash_size(32MB)까지만 검사 → 통과
+  → 03h / 02h / 20h + 3바이트 주소
+  → 칩은 A31-A24를 무시 → 0x0100_0010 이 0x0000_0010(부트로더) 로 wrap
+  → 반환값 FLASH_OK
+```
+
+에러도 로그도 없이 **부트로더가 덮어써집니다.** 조용한 손상입니다.
+
+### 칩이 알려주는 값 (W25Q256JV §7.1.5 / §7.1.6)
+
+Status Register-3 비트 배치: `(R) DRV1 DRV0 (R) (R) WPS ADP ADS`
+
+| 비트 | 이름 | 성격 | 의미 |
+|---|---|---|---|
+| SR3.0 | ADS | 읽기 전용 | **지금** 이 다이가 어느 모드인지 (0=3바이트, 1=4바이트) |
+| SR3.1 | ADP | 비휘발성 | **다음 전원 투입 때** 어느 모드로 뜰지 (0=공장 기본) |
+
+데이터시트 원문:
+
+- ADS: "When ADS=0, the device is in the 3-Byte Address Mode, when ADS=1, the device is in the 4-Byte Address Mode."
+- ADP: "the ADP bit … determines the initial address mode when the device is powered on or reset … only writable by the non-volatile Write Status sequence (06h + 11h)"
+
+즉 모드는 **추측할 대상이 아니라 읽어낼 수 있는 값**입니다.
+
+### 무엇을 바꿨나
+
+1. `FLASH_FEAT_SR3_ADDR_MODE` (feature bit7) — SR3에 ADS/ADP가 있는 부품 표시.
+   Winbond 4바이트 부품에만 붙입니다 (W25Q256JV, W25Q512JV, W25M512의 각 다이).
+   16MB 이하 부품은 같은 두 비트가 다른 뜻이라 붙이지 않습니다.
+2. `Flash_Init` / `Flash_BootInit` 이 **다이마다** `15h`(RDSR3)를 읽어 `handle.sr3`에 저장.
+   (B7h 이후에 읽으므로 ADS는 "지금 실제 모드"를 뜻합니다. 다이마다 상태 레지스터가 따로 있습니다.)
+3. `Flash_GetAddrModeState(&ads, &adp)` — 레지스터 비트를 그대로 주지 않고 1/0으로 해석해서 반환.
+   SR3가 없는 부품은 `FLASH_ERR_UNSUPPORTED` (0/0과 구분; "없음"과 "3바이트 모드"는 다릅니다).
+4. 3바이트 강제 + 4바이트 부품 조합은 **`FLASH_ERR_PARAM`** 으로 거절하고 핸들을 ERROR로 남깁니다.
+
+드라이버가 쓰는 4바이트 전용 opcode(read `0Ch`, program `12h`, erase `21h`)는
+§6.1.4 "dedicated 4-Byte address regardless the device Address Mode setting" 이므로
+ADS 값과 무관하게 동작합니다. 그래서 **모드가 3바이트로 떠 있어도 읽기/쓰기는 정상**입니다.
+
+### 검증
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **34/34 PASS** (TEST 34 신규: 4바이트 부팅 / 3바이트 부팅 / 32MB 3바이트 강제 거절 / 16MB 강제 허용 / SR3 없는 부품) |
+| strict 게이트 (24옵션) | 51 → **51**, diff 0 (신규 경고 0) |
+| ROM (9파일, −Oz, .text+.rodata) | 5,394 → **5,530 B (+136 B)** |
+| RAM | **+2 B** (`sr3`, `sr3_valid`) |
+| 역검증 | 가드 제거 → line 1970 실패 / SR3 읽기 제거 → line 1935 실패 |

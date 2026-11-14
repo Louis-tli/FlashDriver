@@ -283,6 +283,16 @@ const FLASH_INFO *Flash_FindDevice(uint32_t jedec_id)
     s_device.qe_bit     = p_vendor->qe_bit;
     s_device.features   = (uint16_t)(p_vendor->features | extra |
                                      ((size > FLASH_16MB) ? FLASH_FEAT_4BYTE_ADDR : 0U));
+
+    /* SW-042: Winbond's 4-Byte parts report the live and the power-up address
+     * mode in SR3 (W25Q256JV datasheet 7.1.5/7.1.6; likewise W25Q512JV and each
+     * W25Q256JV die inside the W25M512 stack). The same two bits mean something
+     * else on 16 MB parts, so the flag is tied to the 4-Byte boundary rather
+     * than to the manufacturer alone. */
+    if (((jedec_id >> 16) == 0xEFU) && (size > FLASH_16MB)) {
+        s_device.features = (uint16_t)(s_device.features | FLASH_FEAT_SR3_ADDR_MODE);
+    }
+
     s_device.die_count  = die_count;
     /* A SpiStack today is always two identical dies (W25M512), so shift
      * instead of dividing: keeps __aeabi_uidiv out of the image. */
