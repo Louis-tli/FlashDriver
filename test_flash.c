@@ -1051,6 +1051,33 @@ static void Test_AddrModeOpcodes(void)
     assert(g_p_sfc_regs->ADDR_SIZE == 4U);
     assert(s_mock.entered_4byte[0] == true);             /* B7h sent */
     printf("  - Method B (Enter-4B) used 3B opcode 0x%02X + sent B7h. PASSED.\n\n", g_p_sfc_regs->CMD);
+
+    /* (4) A boot block whose addr_mode is not 0..3, with a CORRECT CRC, must be
+     * refused. Without the range guard it would be cast as-is: neither Method A
+     * nor Method B, therefore 3-byte opcodes with a 4-byte address and no B7h -
+     * the chip would shift the extra address byte out as data. Silent misread,
+     * FLASH_OK returned. The CRC cannot catch this: the bytes did arrive intact,
+     * they just mean nothing. */
+    {
+        FLASH_BOOT_CONFIG bad;
+        Mock_Reset();
+        s_mock.mock_jedec_id = 0xEF4019U;                 /* W25Q256JV, 4-byte part */
+        Mock_SetStatus(0x00U, 0x02U, 0x00U);
+        memset(&bad, 0, sizeof(bad));
+        bad.magic         = FLASH_BOOT_CFG_MAGIC;
+        bad.jedec_expect  = 0xEF4019U;
+        bad.model         = (uint32_t)FLASH_MODEL_UNKNOWN;
+        bad.features      = FLASH_FEAT_QUAD;
+        bad.sfc_page_size = 4096U;
+        bad.addr_mode     = 9U;                           /* out of range */
+        bad.crc           = Flash_ConfigCrc(&bad);       /* ...but CRC is valid */
+        memcpy(s_mock.config_buf, &bad, sizeof(bad));
+        s_mock.config_len = (uint32_t)sizeof(bad);
+        status = Flash_BootInit(0x00000000U);
+        assert(status == FLASH_ERR_PARAM);
+        assert(Flash_GetState() == FLASH_STATE_ERROR);
+        printf("  - addr_mode 9 (out of range, valid CRC) refused with PARAM. PASSED.\n\n");
+    }
 }
 
 static void Test_InitNoReset(void)

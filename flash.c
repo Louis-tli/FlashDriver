@@ -166,6 +166,21 @@ static int Flash_CheckRange(uint32_t addr, uint32_t len)
  ******************************************************************************/
 static FLASH_ADDR_MODE Flash_ResolveAddrMode(uint8_t cfg_mode, const FLASH_INFO *info)
 {
+    /* A boot block can carry an addr_mode that is none of the four enum values
+     * (a corrupted write, or a value written by a newer tool and read by older
+     * code). The CRC only proves the bytes arrived intact, not that they mean
+     * anything, so the value has to be range-checked before it is cast.
+     *
+     * An unknown value falls back to 3-Byte on purpose. On a 4-byte device the
+     * guard in Flash_ApplyHandleConfig() then refuses the boot; without this
+     * line the chip would receive a 4th address byte while it is still in
+     * 3-byte mode, shift that byte out as data, and hand back wrong data with
+     * FLASH_OK. On a 3-byte device the result is identical to DEFAULT, so the
+     * fallback can never make a working board worse. */
+    if (cfg_mode > (uint8_t)FLASH_ADDR_4BYTE_ENTER) {
+        return FLASH_ADDR_3BYTE;
+    }
+
     if (cfg_mode == (uint8_t)FLASH_ADDR_MODE_DEFAULT) {
         /* Default: derive from the device's native width (Method A for 4-Byte). */
         return (info->addr_bytes == 4U) ? FLASH_ADDR_4BYTE_OPCODE : FLASH_ADDR_3BYTE;
