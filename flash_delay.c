@@ -37,9 +37,9 @@ uint32_t Flash_SysClockGet(void)
  * loops = ceil(us * clk_hz / (1e6 * CYCLES_PER_LOOP))
  *       = us * ceil(clk_hz / (1e6 * CYCLES_PER_LOOP))     [per-us rounding up]
  *
- * Only 32-bit math is used (no 64-bit division) to keep the M0 footprint
- * small. Per-microsecond rounding adds at most one loop per us, which is
- * safe: it can only make the delay longer, never shorter.
+ * 64비트 나눗셈을 피하려고 32비트 연산만 사용한다 — M0 code size 를 위해서다.
+ * us 단위로 올림하므로 loop 가 최대 1개 더 붙는데, 지연이 길어질 뿐 짧아지지는
+ * 않으므로 안전한 방향이다.
  ******************************************************************************/
 uint32_t Flash_DelayUsToLoops(uint32_t us)
 {
@@ -51,7 +51,7 @@ uint32_t Flash_DelayUsToLoops(uint32_t us)
         return 0U;
     }
 
-    /* Saturate instead of wrapping on very long requests */
+    /* 아주 긴 요청은 감싸지 않고 포화(saturate)시킨다 */
     if (us > (0xFFFFFFFFUL / loops_per_us)) {
         return 0xFFFFFFFFUL;
     }

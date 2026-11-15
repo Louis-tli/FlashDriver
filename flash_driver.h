@@ -36,27 +36,27 @@ extern "C" {
 #endif
 
 /**
- * @brief  Read `len` bytes from `addr` into `buf`.
- *         Automatically picks the fastest read the chip supports and works
- *         with any address / length / buffer alignment.
+ * @brief  `addr` 에서 `buf` 로 `len` byte 를 읽는다.
+ *         칩이 지원하는 가장 빠른 read 를 자동으로 고르고, 주소·길이·buffer
+ *         정렬에 관계없이 동작한다.
  */
 int Flash_ReadBytes(uint32_t addr, void *buf, uint32_t len);
 
 /**
- * @brief  Program `len` bytes from `data` to `addr`.
- *         Handles page-boundary splitting and clears write-protection
- *         automatically. (Flash must be erased at the target first.)
+ * @brief  `data` 의 `len` byte 를 `addr` 에 program 한다.
+ *         Page 경계 분할을 처리하고 write protection 도 자동으로 해제한다.
+ *         (대상 영역은 먼저 erase 되어 있어야 한다.)
  */
 int Flash_WriteBytes(uint32_t addr, const void *data, uint32_t len);
 
 /**
- * @brief  Erase every 4KB sector covering [addr, addr+len).
- *         Accepts any address / length (rounded to sector boundaries).
+ * @brief  [addr, addr+len) 을 덮는 4KB sector 를 모두 erase 한다.
+ *         주소·길이는 자유롭게 줄 수 있다(sector 경계로 반올림).
  */
 int Flash_EraseRange(uint32_t addr, uint32_t len);
 
 /**
- * @brief  Erase the 4KB sector containing `addr`.
+ * @brief  `addr` 이 속한 4KB sector 를 erase 한다.
  */
 int Flash_EraseSector(uint32_t addr);
 
@@ -66,12 +66,12 @@ int Flash_EraseSector(uint32_t addr);
 int Flash_EraseChip(void);
 
 /**
- * @brief  Total flash density in bytes (0 if not initialized).
+ * @brief  전체 flash 용량(byte). 초기화 전이면 0.
  */
 uint32_t Flash_SizeBytes(void);
 
 /**
- * @brief  Sector (erase) size in bytes (0 if not initialized).
+ * @brief  sector(erase) 크기(byte). 초기화 전이면 0.
  */
 uint32_t Flash_SectorSize(void);
 

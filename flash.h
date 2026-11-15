@@ -54,16 +54,16 @@ typedef enum
 /******************************************************************************
  * Supported Flash Models
  ******************************************************************************/
-/* SW-041: a "model" IS its 24-bit JEDEC ID.
+/* SW-041: "model" 은 곧 24-bit JEDEC ID 다.
  *
- * The old enum forced one table row per product, so every new density was
- * new data. With the value equal to the ID, Flash_FindDevice() resolves the
- * part from vendor + density and this type carries no table cost at all.
+ * 예전 enum 은 제품 하나당 table 행 하나를 강요해서, 용량이 늘 때마다 data 도
+ * 늘었다. 값 자체를 ID 로 두면 Flash_FindDevice() 가 vendor + density 로 부품을
+ * 해석하므로 이 type 은 table 비용을 전혀 만들지 않는다.
  *
- * Compatibility note for saved boot settings: settings written by firmware
- * that used the old enum hold 0..7 in the "model" field. Flash_Init() treats
- * any value below 0x01000000 as "no hint" and falls back to the JEDEC probe,
- * which is the same behaviour those products had with FLASH_MODEL_UNKNOWN. */
+ * 저장된 부팅 설정과의 호환: 예전 enum 을 쓰던 firmware 가 쓴 설정에는 "model"
+ * field 에 0..7 이 들어 있다. Flash_Init() 은 0x01000000 미만 값을 "힌트 없음"
+ * 으로 보고 JEDEC probe 로 넘어가는데, 그 부품들이 FLASH_MODEL_UNKNOWN 으로
+ * 동작하던 것과 같은 동작이다. */
 typedef uint32_t FLASH_MODEL;
 
 #define FLASH_MODEL_MX25L512        0xC22010U   /* Macronix 512 Kb / 64 KB */
@@ -176,8 +176,8 @@ typedef enum
 
 /******************************************************************************
  * 4-Byte Address Command Variants (SW-013 / req 2)
- *   Some devices use dedicated opcodes when addressing above 16MB (4-Byte
- *   mode) instead of reusing the 3-Byte opcode after Enter-4-Byte-Mode (B7h).
+ *   16MB 를 넘는 주소를 쓸 때 Enter-4-Byte-Mode(B7h) 후 3-Byte opcode 를 재사용
+ *   하는 대신, 전용 opcode 를 쓰는 부품이 있다.
  ******************************************************************************/
 #define F_CMD_READ_4B                     (0x13U) /* Read Data (4-Byte) */
 #define F_CMD_FAST_READ_4B                (0x0CU) /* Fast Read (4-Byte) */
@@ -200,11 +200,7 @@ typedef enum
 #define FLASH_SR1_BP1                   (1U << 3)   /* Block Protect 1 */
 #define FLASH_SR1_BP2                   (1U << 4)   /* Block Protect 2 */
 #define FLASH_SR1_BP3                   (1U << 5)   /* Block Protect 3 (or TB) */
-#define FLASH_SR1_BP4                   (1U << 6)   /* Block Protect 4 (S6) on GD25LQ64E.
-                                                         NOTE: on Macronix parts this very
-                                                         bit is the quad-enable (QE) bit,
-                                                         so it may only be touched when
-                                                         FLASH_FEAT_BP4 is present. */
+#define FLASH_SR1_BP4                   (1U << 6)   /* GD25LQ64E 의 Block Protect 4(S6). 주의: Macronix 부품에서는 같은 bit 가 quad-enable(QE) bit 이므로 FLASH_FEAT_BP4 가 있을 때만 건드려야 한다. */
 #define FLASH_SR1_QE_MX25L              (1U << 6)   /* Quad Enable for Macronix */
 #define FLASH_SR1_SRP0                  (1U << 7)   /* Status Register Protect 0 */
 
@@ -217,16 +213,16 @@ typedef enum
  * Status Register 3 Bit Masks (Winbond 4-Byte parts: W25Q256JV / W25Q512JV)
  *
  *   W25Q256JV datasheet 7.1.5 / 7.1.6:
- *     ADS (S16, read only)  - the address mode the die is in RIGHT NOW.
+ *     ADS (S16, read only)  - 지금 이 die 가 들어가 있는 address mode.
  *                             "When ADS=0, the device is in the 3-Byte Address
  *                              Mode, when ADS=1 ... 4-Byte Address Mode."
- *     ADP (S17, NV writable) - the mode the die enters at the NEXT power-up,
+ *     ADP (S17, NV writable) - 다음 power-up 때 die 가 진입할 mode.
  *                             "only writable by the non-volatile Write Status
- *                              sequence (06h + 11h)". Factory default is 0.
+ *                              sequence (06h + 11h)". 출하 기본값은 0.
  *
- *   The driver does not have to change them (it always uses the dedicated
- *   4-Byte opcodes, which work in either mode - 6.1.4), but it should CONFIRM
- *   them instead of assuming, which is what SW-042 does.
+ *   driver 는 이 bit 를 바꿀 필요가 없다(항상 전용 4-Byte opcode 를 쓰고, 그
+ *   opcode 는 어느 mode 에서든 동작한다 - 6.1.4). 다만 가정하지 말고 확인해야
+ *   하는데, SW-042 가 그 일을 한다.
  ******************************************************************************/
 #define FLASH_SR3_ADS                   (1U << 0)   /* Current address mode (read only) */
 #define FLASH_SR3_ADP                   (1U << 1)   /* Power-up address mode (NV) */
@@ -238,27 +234,21 @@ typedef enum
 #define FLASH_FEAT_DUAL                 (1U << 0)
 #define FLASH_FEAT_QUAD                 (1U << 1)
 #define FLASH_FEAT_4BYTE_ADDR           (1U << 2)
-/* (bit 3 retired - SW-044) There used to be a FLASH_FEAT_MULTI_DIE flag here.
- * It was a second copy of a number the table already fills in:
- * FLASH_INFO.die_count / die_size. Two sources for one fact can drift apart -
- * a new 2-die part could get die_count = 2 and forget the bit, and the writes
- * would then cross the die boundary without a clamp. The bit stays unused
- * instead of renumbering 4..7, which only churns the table. */
-#define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* One 01h frame carries SR1 and SR2
-                                                         (GigaDevice GD25LQ family only:
-                                                         16 bits mandatory, 8 bits clears
-                                                         SR2 - SW-043) */
+/* (bit 3 retired - SW-044) 예전에 이 자리에 FLASH_FEAT_MULTI_DIE flag 가 있었다.
+ * 그것은 table 이 이미 채워 주는 숫자를 두 번째로 복사한 것이었다:
+ * FLASH_INFO.die_count / die_size. 같은 사실의 출처가 둘이면 어긋날 수 있다 —
+ * 새 2-die 부품이 die_count = 2 를 넣고 bit 는 잊으면, write 가 clamp 없이 die
+ * 경계를 넘어간다. bit 번호를 다시 매기면(4..7) table 만 소란스러워지므로, 그
+ * bit 는 미사용으로 남긴다. */
+#define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* 01h frame 하나가 SR1 과 SR2 를 함께 쓴다(GigaDevice GD25LQ 계열만: 16 bit 필수, 8 bit 면 SR2 가 소거됨 - SW-043) */
 #define FLASH_FEAT_VSR_WREN             (1U << 5)   /* Supports 50h Volatile SR Write Enable */
-#define FLASH_FEAT_BP4                  (1U << 6)   /* SR1 bit6 is a 5th block-protect bit,
-                                                         NOT the quad-enable bit */
-#define FLASH_FEAT_SR3_ADDR_MODE        (1U << 7)   /* SR3 carries ADS/ADP, so the
-                                                         address mode can be confirmed
-                                                         instead of assumed (SW-042) */
+#define FLASH_FEAT_BP4                  (1U << 6)   /* SR1 bit6 은 5번째 block-protect bit 이고 quad-enable bit 이 아니다 */
+#define FLASH_FEAT_SR3_ADDR_MODE        (1U << 7)   /* SR3 가 ADS/ADP 를 담고 있으므로 address mode 를 가정하지 않고 확인할 수 있다(SW-042) */
 
 /******************************************************************************
  * JEDEC ID / Family Matching
  *   JEDEC ID = Manufacturer(8) | Memory Type(8) | Capacity(8).
- *   "Same product family" ignores the capacity byte.
+ *   "같은 제품군"은 capacity byte 를 무시한다.
  ******************************************************************************/
 #define FLASH_JEDEC_ID_MASK             (0x00FFFFFFU)
 #define FLASH_JEDEC_FAMILY_MASK         (0x00FFFF00U)
@@ -281,23 +271,23 @@ typedef enum
  ******************************************************************************/
 #define FLASH_BOOT_CFG_MAGIC            (0x46424F54UL)  /* "FBOT" */
 
-/* SW-021: SPI clock carried inside the boot settings block.
+/* SW-021: SPI clock 을 boot settings block 안에 함께 넣는다.
  *
- * The 24-byte block has no room for a clock field, so spi_hz is appended AFTER
- * crc. Two consequences, both intended:
+ * 24 byte block 에는 clock field 를 넣을 자리가 없어서 spi_hz 를 crc 뒤에
+ * 덧붙였다. 그 결과는 두 가지이고, 둘 다 의도한 것이다:
  *
- *   1. Every existing field keeps its offset (magic 0, jedec 4, model 8,
- *      features 12, sfc_page_size 16, addr_mode 18, crc_algo 19, crc 20), and
- *      Flash_ConfigCrc() still sums exactly the first 20 bytes, so a settings
- *      block written by an older firmware still validates byte for byte.
+ *   1. 기존 field 는 모두 offset 이 그대로다(magic 0, jedec 4, model 8,
+ *      features 12, sfc_page_size 16, addr_mode 18, crc_algo 19, crc 20).
+ *      Flash_ConfigCrc() 도 여전히 앞 20 byte 만 합산하므로, 예전 firmware 가
+ *      쓴 설정 block 도 byte 단위로 그대로 검증된다.
  *
- *   2. The speed window below doubles as the compatibility valve. An old block
- *      has no spi_hz field at all: those 4 bytes read back as 0xFF (erased) or
- *      0x00, both outside the window, and the driver simply keeps its safe
- *      10 MHz bring-up clock instead of failing the boot.
+ *   2. 아래 speed window 가 호환용 안전판 역할을 겸한다. 예전 block 에는
+ *      spi_hz field 자체가 없어서 그 4 byte 는 0xFF(erased) 또는 0x00 으로
+ *      읽히고, 둘 다 window 밖이다. 이때 driver 는 부팅을 실패시키는 대신
+ *      안전한 10 MHz bring-up clock 을 그대로 유지한다.
  *
- * The upper bound is the same 50 MHz that Flash_InitOpt() uses as its normal
- * operational clock, so both init paths behave identically. */
+ * 상한은 Flash_InitOpt() 가 평상시 동작 clock 으로 쓰는 50 MHz 와 같게 두어,
+ * 두 init 경로가 똑같이 동작하게 했다. */
 #define FLASH_BOOT_SPI_HZ_MIN           (1000000UL)     /* 1 MHz  */
 #define FLASH_BOOT_SPI_HZ_MAX           (50000000UL)    /* 50 MHz */
 
@@ -314,9 +304,9 @@ typedef struct
     uint32_t spi_hz;            /* SW-021: SPI clock applied after boot; 0/unset = keep 10 MHz */
 } FLASH_BOOT_CONFIG;
 
-/* Compile-time guard: the block is provisioned into Flash by production tools,
- * so its size must never drift silently. If a field is added or removed, this
- * line fails to compile and forces a deliberate decision about old blocks. */
+/* Compile-time guard: 이 block 은 생산 도구가 Flash 에 써 넣으므로 크기가 조용히
+ * 변하면 안 된다. field 가 늘거나 줄면 이 줄이 compile 을 실패시켜, 예전 block
+ * 을 어떻게 다룰지 반드시 결정하게 만든다. */
 typedef char flash_boot_config_size_must_be_28[
     (sizeof(FLASH_BOOT_CONFIG) == 28U) ? 1 : -1];
 
@@ -327,8 +317,8 @@ typedef enum
 {
     FLASH_ADDR_MODE_DEFAULT     = 0,  /* derive from the device table addr_bytes */
     FLASH_ADDR_3BYTE,                 /* 3-Byte opcodes + 3-Byte address */
-    FLASH_ADDR_4BYTE_OPCODE,          /* dedicated 4-Byte opcodes + 4B address (Method A) */
-    FLASH_ADDR_4BYTE_ENTER            /* Enter-4B (B7h) + 3-Byte opcodes + 4B address (Method B) */
+    FLASH_ADDR_4BYTE_OPCODE,          /* 전용 4-Byte opcode + 4B address (Method A) */
+    FLASH_ADDR_4BYTE_ENTER            /* Enter-4B(B7h) + 3-Byte opcode + 4B address (Method B) */
 } FLASH_ADDR_MODE;
 
 /******************************************************************************
@@ -349,9 +339,9 @@ typedef struct
 /******************************************************************************
  * Common Geometry (identical on every supported device)
  *
- * These used to be fields of FLASH_INFO, but all seven parts use the same
- * values, so storing them per entry only made the table bigger and gave the
- * false impression that they could differ. They are constants now.
+ * 예전에는 FLASH_INFO 의 field 였지만, 지원하는 모든 부품이 같은 값을 써서
+ * 항목별로 저장하면 table 만 커지고 "부품마다 다를 수 있다"는 오해만 생겼다.
+ * 지금은 상수다.
  ******************************************************************************/
 #define FLASH_PAGE_SIZE                 (256U)      /* page program granularity */
 #define FLASH_SECTOR_SIZE               (4096U)     /* smallest erasable unit  */
@@ -362,11 +352,11 @@ typedef struct
  ******************************************************************************/
 typedef struct
 {
-    /* No model-name string: it was 4 bytes per entry plus the string table.
-     * The model is identified by jedec_id / model_id, which the code actually
-     * uses (SW-017: smaller ROM, one less thing to keep in sync).
-     * SW-041: the record describes the part that is on the bus right now, not
-     * a row of a static table; model_id is simply the JEDEC ID. */
+    /* model 이름 문자열은 없다: 항목당 4 byte 에 문자열 table 이 더 붙었다.
+     * model 은 jedec_id / model_id 로 식별되고, 실제로 code 가 쓰는 것도 그것이다
+     * (SW-017: ROM 이 작아지고, 맞춰야 할 것이 하나 줄었다).
+     * SW-041: 이 record 는 정적 table 의 한 행이 아니라 지금 bus 에 있는 부품을
+     * 설명한다. model_id 는 곧 JEDEC ID 다. */
     uint32_t            jedec_id;           /* 24-bit JEDEC ID (RDID 9Fh) */
     FLASH_MODEL         model_id;           /* SW-041: equals jedec_id */
     uint32_t            flash_size;         /* Total density in bytes */
@@ -382,10 +372,10 @@ typedef struct
     uint32_t            die_size;           /* Size of single die in bytes */
 
     /* Read mode configuration table.
-     * SW-035: points at one shared, read-only profile (see flash_table.c)
-     * instead of storing a private copy of six 8-byte entries (56 bytes per
-     * row). Indexed by FLASH_READ_MODE exactly like the old array, so every
-     * consumer keeps reading info->read_cfg[mode] unchanged. */
+     * SW-035: 여섯 개 8-byte 항목(행당 56 byte)을 private copy 로 들고 있는 대신
+     * flash_table.c 의 공유 read-only profile 하나를 가리킨다. 예전 array 와 똑같이
+     * FLASH_READ_MODE 로 index 하므로, 모든 사용처는 info->read_cfg[mode] 를 그대로
+     * 읽으면 된다. */
     const FLASH_READ_CFG *read_cfg;
 } FLASH_INFO;
 
@@ -413,7 +403,7 @@ typedef struct
 extern FLASH_HANDLE g_flash_handle;
 
 /**
- * @brief Check if address/pointer is aligned to the given byte boundary.
+ * @brief 주소/pointer 가 주어진 byte 경계에 정렬되어 있는지 확인한다.
  */
 static inline bool Flash_IsAligned(uintptr_t val, uint32_t alignment_bytes)
 {
@@ -421,8 +411,8 @@ static inline bool Flash_IsAligned(uintptr_t val, uint32_t alignment_bytes)
 }
 
 /**
- * @brief Return true if two JEDEC IDs belong to the same product family
- *        (same manufacturer + memory type; capacity byte ignored).
+ * @brief 두 JEDEC ID 가 같은 제품군인지 반환한다
+ *        (manufacturer + memory type 이 같고 capacity byte 는 무시).
  */
 static inline bool Flash_FamilyMatch(uint32_t jedec_a, uint32_t jedec_b)
 {
@@ -434,25 +424,25 @@ static inline bool Flash_FamilyMatch(uint32_t jedec_a, uint32_t jedec_b)
  ******************************************************************************/
 
 /**
- * @brief  Compute the checksum for a boot settings block.
+ * @brief  boot settings block 의 checksum 을 계산한다.
  */
 uint32_t Flash_ConfigCrc(const FLASH_BOOT_CONFIG *cfg);
 
 /**
- * @brief  Basic (safe) single-line Read Data (03h) that works on every device
- *         before any QE / address-mode configuration is applied.
- *         Used at boot to load the settings block.
- * @param  addr: 32-bit Flash address (config block lives in low memory).
- * @param  buf:  Destination buffer.
- * @param  len:  Number of bytes to read.
+ * @brief  모든 부품에서 동작하는 기본(안전) single-line Read Data(03h).
+ *         QE / address-mode 설정이 하나도 적용되기 전에도 쓸 수 있다.
+ *         부팅할 때 settings block 을 읽는 데 사용한다.
+ * @param  addr: 32-bit Flash address (config block 은 low memory 에 있다).
+ * @param  buf:  결과를 받을 buffer.
+ * @param  len:  읽을 byte 수.
  */
 int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len);
 
 /**
- * @brief  Boot-time initialization: ID response check -> basic-read settings
- *         block -> configure from settings -> lock the selection.
- *         On any mismatch / bad ID the driver enters a fail-safe error state.
- * @param  config_addr: Flash address of the FLASH_BOOT_CONFIG block.
+ * @brief  Boot-time initialization: ID 응답 확인 -> basic-read 로 settings
+ *         block 을 읽음 -> settings 로 configure -> 선택을 lock.
+ *         ID 가 틀리거나 불일치하면 driver 는 fail-safe error state 로 들어간다.
+ * @param  config_addr: FLASH_BOOT_CONFIG block 의 Flash address.
  * @return FLASH_OK on success, or negative error code (fail-safe on failure).
  */
 int Flash_BootInit(uint32_t config_addr);
@@ -463,9 +453,9 @@ int Flash_BootInit(uint32_t config_addr);
 int Flash_BootInitOpt(uint32_t config_addr, uint32_t options);
 
 /**
- * @brief  Initialize the Flash Driver (auto-detect variant).
- *         Probes JEDEC ID via safe Single SPI mode, searches model table,
- *         configures address mode, verifies/enables QE bit on every die.
+ * @brief  Flash Driver 초기화(auto-detect 방식).
+ *         안전한 Single SPI mode 로 JEDEC ID 를 probe 하고, model 을 찾고,
+ *         address mode 를 설정하고, die 마다 QE bit 를 확인/활성화한다.
  * @return FLASH_OK on success, or negative error code.
  */
 int Flash_Init(void);
@@ -496,23 +486,22 @@ int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val);
 int Flash_WriteStatus(uint8_t reg_idx, uint8_t val);
 
 /**
- * @brief  Clear all block-protect (BP) bits on the active die so that
- *         program / erase cannot silently fail. Preserves QE and other bits.
+ * @brief  active die 의 block-protect(BP) bit 를 모두 지워서, program / erase 가
+ *         조용히 실패하는 일이 없게 한다. QE 와 나머지 bit 는 보존한다.
  *         (SW-013 / G2)
  *
- *         SW-037: Flash_Write / Flash_Erase no longer call this for you.
- *         Protection is now entirely the caller's decision: call it once
- *         before the first program/erase, and the driver will never quietly
- *         unlock the device behind your back.
+ *         SW-037: Flash_Write / Flash_Erase 는 더 이상 이 함수를 대신 불러 주지
+ *         않는다. 보호는 이제 전적으로 호출자의 결정이다: 첫 program/erase 전에
+ *         한 번 부르면, driver 가 뒤에서 몰래 칩을 unlock 하는 일은 없다.
  */
 int Flash_Unprotect(void);
 
 /**
- * @brief  Set block-protect (BP) bits on the active die from a mask to protect
- *         memory regions. Preserves QE and other bits. (SW-013 / G2)
- *         bits 3..0 = BP3..BP0. Bit 4 = BP4 (only on parts that carry
- *         FLASH_FEAT_BP4, e.g. GD25LQ64E); it is ignored elsewhere so that the
- *         Macronix quad-enable bit (same position) is never disturbed.
+ * @brief  mask 로 active die 의 block-protect(BP) bit 를 세워 메모리 영역을
+ *         보호한다. QE 와 나머지 bit 는 보존한다. (SW-013 / G2)
+ *         bits 3..0 = BP3..BP0. bit 4 = BP4 (FLASH_FEAT_BP4 를 가진 부품만,
+ *         예: GD25LQ64E). 그 외 부품에서는 무시되므로, 같은 자리에 있는
+ *         Macronix 의 quad-enable bit 를 건드릴 수 없다.
  */
 int Flash_Protect(uint8_t bp_mask);
 
@@ -522,10 +511,10 @@ int Flash_Protect(uint8_t bp_mask);
 int Flash_WriteEnable(void);
 
 /**
- * @brief  Send Volatile Status-Register Write Enable (50h).
- *         Datasheet: 50h does NOT set WEL and is valid ONLY for the
- *         immediately following WRSR — no commands may be inserted between.
- *         Used for volatile SR writes (e.g. QE) when the device supports it.
+ * @brief  Volatile Status-Register Write Enable(50h)을 보낸다.
+ *         Datasheet: 50h 는 WEL 을 세우지 않고, 바로 뒤따르는 WRSR 만 무장한다 —
+ *         그 사이에 어떤 command 도 끼우면 안 된다.
+ *         부품이 지원할 때 volatile SR write(예: QE) 에 쓴다.
  */
 int Flash_WriteEnableVolatile(void);
 
@@ -550,39 +539,39 @@ int Flash_EnableQuad(void);
 int Flash_SelectDie(uint8_t die_idx);
 
 /**
- * @brief  Report the address-mode state decoded from Status Register-3 (SW-042).
+ * @brief  Status Register-3 에서 해석한 address-mode 상태를 알려준다(SW-042).
  *
- *         Only parts with FLASH_FEAT_SR3_ADDR_MODE (Winbond 4-Byte devices:
- *         W25Q256JV, W25Q512JV, each die of the W25M512 stack) have these bits;
- *         everywhere else the call returns FLASH_ERR_UNSUPPORTED and writes
- *         nothing, rather than inventing a value from an undefined register.
+ *         FLASH_FEAT_SR3_ADDR_MODE 를 가진 부품(Winbond 4-Byte 계열: W25Q256JV,
+ *         W25Q512JV, W25M512 stack 의 die 각각)만 이 bit 를 갖는다. 나머지 부품에서는
+ *         정의되지 않은 register 값으로 추측하지 않고 FLASH_ERR_UNSUPPORTED 를
+ *         돌려주며 아무것도 쓰지 않는다.
  *
- * @param  p_ads:  1 = the die is in 4-Byte Address Mode right now (NULL ok)
- * @param  p_adp:  1 = the die will power up in 4-Byte Address Mode (NULL ok)
+ * @param  p_ads:  1 = 이 die 는 지금 4-Byte Address Mode 상태다 (NULL ok)
+ * @param  p_adp:  1 = 이 die 는 power-up 시 4-Byte Address Mode 로 뜬다 (NULL ok)
  */
 int Flash_GetAddrModeState(uint8_t *p_ads, uint8_t *p_adp);
 
 /**
- * @brief  Read data from Flash (direct SPI or SFC Memory-Mapped DMA).
- *         When FLASH_READ_OPT_CRC is set, the CRC is accumulated across all
- *         transfer chunks and can be retrieved with Flash_GetLastCRC().
+ * @brief  Flash 에서 data 를 읽는다(직접 SPI 또는 SFC Memory-Mapped DMA).
+ *         FLASH_READ_OPT_CRC 가 설정되어 있으면, CRC 를 모든 transfer chunk 에
+ *         걸쳐 누적하며 Flash_GetLastCRC() 로 꺼낼 수 있다.
  */
 int Flash_Read(uint32_t addr, void *buf, uint32_t count,
                FLASH_READ_MODE mode, FLASH_READ_UNIT unit,
                uint32_t options);
 
 /**
- * @brief  Program data into Flash (Single 02h or Quad 32h).
- *         SW-037: block protection is NOT cleared automatically. If the target
- *         region is protected the device ignores the program and this function
- *         still returns FLASH_OK, so call Flash_Unprotect() first.
+ * @brief  Flash 에 data 를 program 한다(Single 02h 또는 Quad 32h).
+ *         SW-037: block protect 를 자동으로 해제하지 않는다. 대상 영역이 보호되어
+ *         있으면 부품이 program 을 무시하는데 이 함수는 그래도 FLASH_OK 를 돌려주므로,
+ *         먼저 Flash_Unprotect() 를 부를 것.
  */
 int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
                 FLASH_PROGRAM_MODE mode);
 
 /**
- * @brief  Erase Sector (4KB), Block (32KB/64KB), or Chip.
- *         SW-037: block protection is NOT cleared automatically; see Flash_Write.
+ * @brief  Sector(4KB), Block(32KB/64KB) 또는 Chip 을 erase 한다.
+ *         SW-037: block protect 를 자동으로 해제하지 않는다. Flash_Write 참조.
  */
 int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode);
 

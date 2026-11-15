@@ -17,14 +17,8 @@ uint8_t Flash_CmdAddrBytes(FLASH_ADDR_MODE mode)
 
 bool Flash_CmdUse4bOpcode(FLASH_ADDR_MODE mode)
 {
-    /* Only Method A uses the dedicated 4-Byte opcodes. */
+    /* 전용 4-Byte opcode 를 쓰는 것은 Method A 뿐이다. */
     return (mode == FLASH_ADDR_4BYTE_OPCODE);
-}
-
-bool Flash_CmdNeedsEnter4b(FLASH_ADDR_MODE mode)
-{
-    /* Only Method B needs an Enter-4-Byte (B7h) sequence. */
-    return (mode == FLASH_ADDR_4BYTE_ENTER);
 }
 
 /******************************************************************************
@@ -76,7 +70,7 @@ uint32_t Flash_CmdBuildHeader(uint8_t *buf, uint8_t cmd, uint32_t addr,
         buf[n++] = (uint8_t)(addr & 0xFFU);
     }
 
-    /* Dummy bytes: DUMMY_LAST first (M7-M0 slot), then DUMMY_VAL for the rest. */
+    /* Dummy byte 순서: 첫 바이트는 DUMMY_LAST(M7-M0 슬롯), 나머지는 DUMMY_VAL. */
     if (read_cfg != NULL) {
         for (uint32_t i = 0U; i < (uint32_t)read_cfg->dummy_bytes; i++) {
             if (n >= FLASH_CMD_HDR_MAX) {

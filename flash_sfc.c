@@ -11,7 +11,7 @@
 
 /******************************************************************************
  * Global Pointer to SFC Register Map
- * (Default points to a static fallback instance for simulation / unit test)
+ * (기본값은 simulation / unit test 용 static fallback instance)
  ******************************************************************************/
 static SFC_TypeDef s_sfc_sim_regs;
 SFC_TypeDef *g_p_sfc_regs = &s_sfc_sim_regs;
@@ -69,9 +69,9 @@ void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
 int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
                       FLASH_READ_UNIT unit, bool use_crc, uint32_t *p_crc_out)
 {
-    /* Unit mapping (DEFAULT/WORD -> 4, HALFWORD -> 2, BYTE -> 1), NULL/count
-     * checks, 32-bit overflow guard and the Cortex-M0 alignment check all come
-     * from the shared helper (SW-016) — the SPI path uses the very same code. */
+    /* Unit 매핑(DEFAULT/WORD -> 4, HALFWORD -> 2, BYTE -> 1), NULL/count 검사,
+         * 32비트 overflow 방어, Cortex-M0 정렬 검사는 모두 공용 helper(SW-016)가
+         * 처리한다 — SPI 경로도 같은 code 를 쓴다. */
     uint32_t unit_bytes = 0U;
     uint32_t total_bytes = 0U;
     int status = Flash_XferResolve(unit, count, dst_buf, flash_addr,
@@ -84,15 +84,15 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         return FLASH_ERR_HARDWARE;
     }
 
-    /* Simulation register block = unit-test / bring-up with no SFC IP behind it.
-     * Everything simulation-only must be gated on this flag, otherwise it runs
-     * on real silicon and destroys the DMA result (SW-015). */
+    /* Simulation register block — 뒤에 SFC IP 가 없는 unit test / bring-up 용.
+         * Simulation 전용 동작은 반드시 이 flag 로 막아야 한다. 그렇지 않으면 실제
+         * silicon 에서도 실행되어 DMA 결과를 망친다(SW-015). */
     const bool is_sim = (g_p_sfc_regs == &s_sfc_sim_regs);
 
     g_p_sfc_regs->ACCESS_UNIT = unit_bytes;
 
-    /* Ensure the CRC engine is enabled. The reset is issued once per transfer
-     * by Flash_SFC_CrcReset() so the result accumulates across all chunks. */
+    /* CRC engine 이 켜져 있는지 확인한다. reset 은 Flash_SFC_CrcReset() 이
+         * 전송당 한 번만 걸기 때문에 결과는 모든 chunk 에 걸쳐 누적된다. */
     if (use_crc) {
         g_p_sfc_regs->CRC_CTRL |= SFC_CRC_CTRL_ENABLE;
     }
@@ -101,7 +101,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
     uint32_t remaining = total_bytes;
     uint32_t current_addr = flash_addr;
 
-    /* Loop through transfers split by SFC page size (2KB or 4KB) */
+    /* SFC page size(2KB/4KB) 단위로 나눠 전송하는 loop */
     while (remaining > 0U) {
         const uint32_t chunk_len = (remaining > s_sfc_transfer_page_size) ?
                                    (uint32_t)s_sfc_transfer_page_size : remaining;
@@ -110,9 +110,9 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         g_p_sfc_regs->DMA_DST = (uint32_t)(uintptr_t)p_dst;
         g_p_sfc_regs->DMA_LEN = chunk_len;
 
-        /* Hardware CRC accumulates over the whole transfer by itself. Only the
-         * simulation folds the length into the accumulator; on real silicon the
-         * SFC IP owns CRC_RES and a software add would corrupt the result. */
+        /* 실제 hardware CRC 는 전송 전체에 걸쳐 스스로 누적된다. 길이를
+                 * accumulator 에 더하는 것은 simulation 뿐이다. 실제 silicon 에서는
+                 * SFC IP 가 CRC_RES 를 소유하므로 software 가 더하면 결과가 깨진다. */
         if (use_crc && is_sim) {
             g_p_sfc_regs->CRC_RES += chunk_len;
         }
@@ -132,7 +132,7 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
                 return FLASH_ERR_TIMEOUT;
             }
 
-            /* Simulation only: no DMA engine exists to raise DMA_DONE. */
+            /* Simulation 전용: DMA_DONE 을 올려 줄 DMA engine 이 없다. */
             if (is_sim) {
                 g_p_sfc_regs->STATUS |= SFC_STATUS_DMA_DONE;
             }
@@ -141,9 +141,9 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
         /* Clear DMA completion flag */
         g_p_sfc_regs->STATUS &= ~SFC_STATUS_DMA_DONE;
 
-        /* Simulation only: model the DMA writing read data into the destination.
-         * On real hardware the SFC IP already filled p_dst from the flash array,
-         * so touching it here would overwrite every byte with 0xFF (SW-015). */
+        /* Simulation 전용: DMA 가 read data 를 목적지에 쓴 상황을 흉내낸다.
+                 * 실제 hardware 는 SFC IP 가 flash array 에서 p_dst 를 이미 채웠으므로,
+                 * 여기서 건드리면 모든 byte 가 0xFF 로 덮인다(SW-015). */
         if (is_sim) {
             for (uint32_t i = 0U; i < chunk_len; i++) {
                 p_dst[i] = 0xFFU;

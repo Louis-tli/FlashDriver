@@ -47,63 +47,63 @@ typedef struct
     uint32_t wren_count;
     uint32_t vsr_wren_count;
 
-    /* SW-013 WEL fix: 50h arms ONLY the next WRSR and does NOT set WEL
-     * (Winbond W25Q / GigaDevice GD25LQ datasheets). Intervening commands
-     * clear the pending volatile enable. WRSR is accepted only when WEL is
-     * set (06h) or a 50h is pending. */
+    /* SW-013 WEL fix: 50h 는 바로 다음 WRSR 만 무장하고 WEL 은 세우지 않는다
+     * (Winbond W25Q / GigaDevice GD25LQ datasheet). 중간에 다른 command 가 오면
+     * 대기 중인 volatile enable 이 풀린다. WRSR 은 WEL 이 서 있거나(06h) 50h 가
+     * 대기 중일 때만 받아들여진다. */
     bool     vsr_wren_pending;
     bool     wrsr_accepted;
 
-    /* SW-019: byte count of the last 01h (WRSR) frame, so a test can prove the
-     * driver always sends the full 16-bit form (opcode + SR1 + SR2) on parts
-     * that cannot address SR2 on its own. */
+    /* SW-019: 마지막 01h(WRSR) frame 의 byte 수. SR2 를 단독으로 지정할 수 없는
+     * 부품에서 driver 가 언제나 16-bit 형식(opcode + SR1 + SR2)을 보내는지 test 가
+     * 증명할 수 있게 한다. */
     uint32_t wrsr1_frame_bytes;
 
-    /* SW-043: the most recent status-register write frame (01h/31h/11h) as it
-     * went out, so a test can prove WHICH family path was taken. */
+    /* SW-043: 가장 최근 status-register write frame(01h/31h/11h)을 나간 그대로 보관한다.
+     * test 가 어느 family 경로로 갔는지 증명할 수 있게 하려는 것이다. */
     uint8_t  last_wrsr_opcode;
     uint32_t last_wrsr_tx_len;
 
-    /* SW-043: set when the part on the bus is a GigaDevice 3V (GD25Q) device,
-     * which executes 01h with exactly one data byte. A wider frame is not
-     * executed at all (datasheet 7.4), so the extra byte must not reach SR2 -
-     * that is the failure a read-back has to catch. */
+    /* SW-043: bus 위의 부품이 GigaDevice 3V(GD25Q) 계열이면 세운다. 이 계열은 01h
+     * 를 data byte 하나로만 실행한다. 더 넓은 frame 은 아예 실행되지 않으므로
+     * (datasheet 7.4) 여분 byte 가 SR2 에 닿아서는 안 된다 — read-back 이 잡아내야
+     * 하는 실패가 바로 그것이다. */
     bool     wrsr_drop_extra_byte;
 
-    /* SW-037: how many status-register write frames (01h/31h/11h) have been
-     * seen on the bus at all. Program and erase must NOT add to this count:
-     * that is how the test proves the driver no longer unlocks the chip. */
+    /* SW-037: status register write frame(01h/31h/11h)이 bus 에 몇 번 나왔는지.
+     * program 과 erase 는 이 수를 늘리면 안 된다 — test 는 그것으로 driver 가 더는
+     * 칩을 스스로 unlock 하지 않는다는 것을 증명한다. */
     uint32_t wrsr_frame_count;
 
-    /* SW-020: the device is in the middle of a self-timed cycle for the next N
-     * status reads. While it is, SR1 reports WIP(BUSY)=1 and WREN is dropped,
-     * so WEL and BUSY can legitimately be seen set at the same time - the
-     * exact window where a WEL-only check lies about being ready. */
+    /* SW-020: 앞으로 N 번의 status read 동안 부품은 self-timed 주기 중이다. 그
+     * 동안 SR1 은 WIP(BUSY)=1 을 보고하고 WREN 은 버려지므로, WEL 과 BUSY 가 동시에
+     * 서 있는 것이 정상이다 — WEL 만 보는 검사가 "준비됨"이라고 거짓말하는 바로 그
+     * 구간이다. */
     uint32_t busy_reads_remaining;
 
-    /* SW-020: the device silently drops the next WRSR (a rejected write).
-     * Nothing on the wire indicates it, so only a read-back can notice. */
+    /* SW-020: 부품이 다음 WRSR 을 조용히 버린다(write 거절). 선로에는 아무 표시도
+     * 없으므로 read-back 만이 알아챌 수 있다. */
     bool     drop_next_wrsr;
 
-    /* SW-021: the last SPI clock the driver asked for, so a test can prove the
-     * boot settings block really drives the bus speed. */
+    /* SW-021: driver 가 마지막으로 요청한 SPI clock. boot settings block 이 실제로 bus
+     * 속도를 몰아가는지 test 가 증명할 수 있게 하려는 것이다. */
     uint32_t spi_speed_hz;
 
-    /* SW-035: the part keeps TWO copies of the status register.
-     *   sr1/sr2/sr3      = the VOLATILE copy (what 05h/35h/15h read back)
-     *   nv_sr1/nv_sr2/.. = the NON-VOLATILE copy (survives power-off)
-     * A 01h frame armed by 06h writes both; armed by 50h it writes only the
-     * volatile copy, exactly like the datasheet describes. Before this model
-     * existed the mock had a single copy, so a block protect written with 50h
-     * looked permanent in the tests while vanishing on real hardware. */
+    /* SW-035: 부품은 status register 를 두 벌로 들고 있다.
+     *   sr1/sr2/sr3      = VOLATILE copy (05h/35h/15h 가 읽는 값)
+     *   nv_sr1/nv_sr2/.. = NON-VOLATILE copy (power-off 후에도 유지)
+     * 06h 로 무장한 01h frame 은 둘 다 쓰고, 50h 로 무장하면 datasheet 설명대로
+     * volatile copy 만 쓴다. 이 model 이 없던 시절 mock 은 한 벌만 두었기 때문에,
+     * 50h 로 쓴 block protect 가 test 에서는 영구인 것처럼 보이면서 실제 hardware
+     * 에서는 사라졌다. */
     uint8_t  nv_sr1[2], nv_sr2[2], nv_sr3[2];
     bool     wrsr_volatile;         /* the 01h being executed is a volatile write */
 } MOCK_SPI_STATE;
 
 static MOCK_SPI_STATE s_mock;
 
-/* SW-016: geometry of the most recent Flash_SPI_Transact() frame, so the tests
- * can prove that command/address/data travel as ONE buffered transaction. */
+/* SW-016: 가장 최근 Flash_SPI_Transact() frame 의 구성. command/address/data 가
+ * buffer 하나의 transaction 으로 나간다는 것을 test 가 증명할 수 있게 한다. */
 typedef struct
 {
     uint32_t frames;            /* Flash_SPI_Transact() calls since reset       */
@@ -120,8 +120,8 @@ typedef struct
 
 static MOCK_XFER_LOG s_xfer;
 
-/* Reset mock to a clean state (both dies). Also clear the driver handle so
- * each test starts from a fresh, unlocked driver. */
+/* mock 을 깨끗한 상태로 되돌린다(die 두 개 모두). driver handle 도 함께 지워서
+ * 각 test 가 새롭고 unlock 되지 않은 driver 에서 시작하게 한다. */
 static void Mock_Reset(void)
 {
     memset(&s_mock, 0, sizeof(s_mock));
@@ -154,9 +154,9 @@ static void Mock_SetStatus(uint8_t sr1, uint8_t sr2, uint8_t sr3)
     s_mock.wrsr_volatile = false;
 }
 
-/* SW-035: cut the power and bring it back. The volatile status registers are
- * reloaded from the non-volatile image - the one thing a block protect must
- * survive. Everything else (memory content) is kept, as on real hardware. */
+/* SW-035: 전원을 끊었다 다시 넣는다. volatile status register 는 non-volatile
+ * image 에서 다시 적재된다 — block protect 가 반드시 견뎌야 하는 바로 그 지점.
+ * 나머지(memory 내용)는 실제 hardware 처럼 그대로 둔다. */
 static void Mock_PowerCycle(void)
 {
     for (int d = 0; d < 2; d++) {
@@ -195,18 +195,18 @@ static void Mock_SetBootConfigHz(uint32_t jedec_expect, uint16_t sfc_page,
     s_mock.config_len = (uint32_t)sizeof(cfg);
 }
 
-/* Tests written before SW-021 have no clock in their block. 0xFFFFFFFF is what
- * follows a 24-byte block on erased Flash, so this is the honest "field absent"
- * case: the driver must still boot, just keep the 10 MHz bring-up clock. */
+/* SW-021 이전에 작성된 test 의 block 에는 clock 이 없다. 지워진 Flash 에서
+ * 24-byte block 뒤에 오는 값이 0xFFFFFFFF 이므로, 이것이 "field 없음"의 정직한
+ * 경우다: driver 는 그래도 부팅해야 하고, 10 MHz bring-up clock 을 유지해야 한다. */
 static void Mock_SetBootConfig(uint32_t jedec_expect, uint16_t sfc_page, uint32_t features)
 {
     Mock_SetBootConfigHz(jedec_expect, sfc_page, features, 0xFFFFFFFFU);
 }
 
-/* Does the emulated part use the FIXED 16-bit WRSR (01h) frame?
- * Look it up in the model table instead of hard-coding one part number, so
- * every GigaDevice density (16Mb / 32Mb / 64Mb) behaves like the silicon.
- * (GD25LQ16E/32E/64E section 7.4: 8-bit writes clear S15-S8, i.e. QE + CMP.) */
+/* Emulation 부품이 고정 16-bit WRSR(01h) frame 을 쓰는가?
+ * 특정 부품 번호를 hard-code 하지 않고 model table 에서 찾는다 — GigaDevice
+ * 모든 용량(16Mb / 32Mb / 64Mb)이 silicon 과 같이 동작하게 하려는 것이다.
+ * (GD25LQ16E/32E/64E 7.4: 8-bit write 는 S15-S8, 즉 QE + CMP 를 지운다.) */
 static bool Mock_Uses16BitWrsr(void)
 {
     const FLASH_INFO *info = Flash_FindDevice(s_mock.mock_jedec_id);
@@ -215,10 +215,10 @@ static bool Mock_Uses16BitWrsr(void)
            ((info->features & FLASH_FEAT_STATUS_2BYTE_WRITE) != 0U);
 }
 
-/* SW-043: how the SILICON behaves, decided from the raw ID and not from the
- * driver's table - otherwise a wrong table would make its own test pass.
- * GigaDevice memory-type byte 0x60 = GD25LQ (1.8V, 16-bit 01h mandatory);
- * 0x40 = GD25Q (3V, one register per 01h/31h/11h frame). */
+/* SW-043: SILICON 이 어떻게 동작하는지를 driver table 이 아니라 raw ID 로
+ * 판단한다 — table 이 틀리면 자기 test 만 통과시켜 버리기 때문이다.
+ * GigaDevice memory-type byte 0x60 = GD25LQ(1.8V, 16-bit 01h 필수),
+ * 0x40 = GD25Q(3V, 01h/31h/11h frame 마다 register 하나). */
 static bool Mock_PartRejectsWideWrsr(void)
 {
     const uint32_t id = s_mock.mock_jedec_id & 0x00FFFFFFU;
@@ -261,13 +261,13 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
         s_mock.current_cmd = tx_byte;
         s_mock.cmd_byte_index = 1U;
 
-        /* SW-013 WEL fix: model datasheet semantics — WRSR is accepted only
-         * with WEL (06h) or a pending 50h; anything else clears the 50h. */
+        /* SW-013 WEL fix: datasheet 의미를 흉내낸다 — WRSR 은 WEL(06h)이 서 있거나
+         * 대기 중인 50h 가 있을 때만 받아들여지고, 그 외에는 대기 중인 50h 가 풀린다. */
         if ((tx_byte == F_CMD_WRSR1) || (tx_byte == F_CMD_WRSR2) || (tx_byte == F_CMD_WRSR3)) {
             s_mock.wrsr_accepted = (((s_mock.sr1[s_mock.current_die] & FLASH_SR1_WEL) != 0U) ||
                                     s_mock.vsr_wren_pending);
-            /* SW-035: remember WHICH copy this frame is allowed to touch. 50h
-             * arms only the volatile copy; 06h arms the non-volatile one. */
+            /* SW-035: 이 frame 이 어느 copy 를 건드릴 수 있는지 기억한다. 50h 는 volatile
+             * copy 만, 06h 는 non-volatile copy 를 무장한다. */
             s_mock.wrsr_volatile    = s_mock.vsr_wren_pending;
             s_mock.vsr_wren_pending = false;
         }
@@ -277,8 +277,8 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 
         if (tx_byte == F_CMD_WREN) {
             s_mock.wren_count++;
-            /* SW-020: like the silicon, WREN is ignored during an embedded
-             * operation (WIP=1), so it must not set WEL then. */
+            /* SW-020: 실제 silicon 처럼, embedded 주기(WIP=1) 중에는 WREN 이 무시되므로 그때
+             * WEL 이 서서는 안 된다. */
             if (s_mock.busy_reads_remaining == 0U) {
                 s_mock.sr1[s_mock.current_die] |= FLASH_SR1_WEL;
             }
@@ -355,9 +355,9 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
             }
             else if (s_mock.cmd_byte_index == 2U) {
                 if (s_mock.wrsr_drop_extra_byte) {
-                    /* SW-043: GigaDevice 3V part. A 01h frame is one data byte
-                     * wide there, so the command is not executed - SR2 keeps
-                     * its old value and the read-back reports the failure. */
+                    /* SW-043: GigaDevice 3V 부품. 여기서 01h frame 은 data byte 하나 폭이므로 그
+                     * command 는 실행되지 않는다 — SR2 는 예전 값을 유지하고 read-back 이 실패를
+                     * 보고한다. */
                     s_mock.cmd_byte_index++;
                     break;
                 }
@@ -415,9 +415,9 @@ uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
     return rx_byte;
 }
 
-/* SW-016: instrumented stand-in for the target BSP's buffered transfer.
- * Records the requested phase geometry, then replays the bytes through the
- * byte-level mock so the emulated device still sees the same wire order. */
+/* SW-016: 목표 BSP 의 buffered transfer 를 계측하도록 대신 세운 것. 요청된
+ * phase 구성을 기록한 뒤, byte 단위 mock 으로 같은 byte 를 다시 흘려보내
+ * emulation 부품이 같은 선로 순서를 보게 한다. */
 void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
 {
     s_xfer.frames++;
@@ -474,13 +474,13 @@ void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
     }
 
     /* ---------------------------------------------------------------------
-     * SW-019 mock fidelity: GD25LQ64E WRSR is a FIXED 16-bit command.
+     * SW-019 mock fidelity: GD25LQ64E 의 WRSR 은 고정 16-bit command 다.
      * Datasheet 7.4 - "If CS# is driven high after eighth bit of the data
-     * byte, the command is not executed" in QSPI, but in SPI mode the write
-     * IS executed and "the QE and CMP bits will be cleared to 0".
-     * The earlier mock only wrote SR1 and left QE alone, which is exactly why
-     * the one-byte SR1 update looked harmless in the test suite while a real
-     * part would silently drop out of quad mode. Model the silicon here.
+     * byte, the command is not executed" 는 QSPI 의 경우이고, SPI mode 에서는
+     * write 가 실행되며 "the QE and CMP bits will be cleared to 0" 이다.
+     * 예전 mock 은 SR1 만 쓰고 QE 는 건드리지 않았는데, 그래서 1-byte SR1 갱신이
+     * test suite 에서는 무해해 보였지만 실제 부품은 조용히 quad mode 를 벗어났다.
+     * 여기서 silicon 을 흉내낸다.
      * ------------------------------------------------------------------- */
     if ((xfer->tx_buf != NULL) && (xfer->tx_buf[0] == F_CMD_WRSR1)) {
         s_mock.wrsr1_frame_bytes = xfer->tx_len;
@@ -519,8 +519,8 @@ static void Test_TableLookup(void)
 
     assert(Flash_FindDevice(0x123456U) == NULL);
 
-    /* SW-041: there is no flat table to walk any more. Sweep the IDs that used
-     * to be rows and print what the vendor + density resolver makes of them. */
+    /* SW-041: 이제 훑을 flat table 이 없다. 예전에 행이던 ID 들을 쓸어 보며,
+     * vendor + density resolver 가 그것들을 어떻게 해석하는지 출력한다. */
     static const struct { uint32_t id; const char *name; } known[] = {
         { 0xEF6018U, "W25Q128JW"  }, { 0xEF4020U, "W25Q512JV"  },
         { 0xEF4019U, "W25Q256JV"  }, { 0xEF6119U, "W25M512"    },
@@ -721,7 +721,7 @@ static void Test_SFCDMAReadSequence(void)
 
 /******************************************************************************
  * NEW TESTS (SW-013): boot model, family match, fail-safe, per-die QE,
- *                      CRC accumulation, direct-SPI guard.
+ *                      CRC 누적, direct-SPI guard.
  ******************************************************************************/
 static void Test_BootConfigAndLock(void)
 {
@@ -751,8 +751,8 @@ static void Test_BootFamilyMatch(void)
 {
     printf("[TEST 8] Boot: same product family accepted, foreign family refused...\n");
 
-    /* Same family (Winbond EF40xx), different capacity: W25Q512JV selected,
-     * W25Q256JV actually present -> both are family EF+0x40 -> ACCEPTED. */
+    /* 같은 제품군(Winbond EF40xx), 용량만 다름: W25Q512JV 를 선택했지만 실제로는
+     * W25Q256JV 가 붙어 있음 -> 둘 다 family EF+0x40 -> 허용. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF4019U;                 /* W25Q256JV present */
     Mock_SetStatus(0x00U, 0x02U, 0x00U);
@@ -778,9 +778,9 @@ static void Test_BootFamilyMatch(void)
     s_mock.mock_jedec_id = 0xEF4019U;
     Mock_SetStatus(0x00U, 0x02U, 0x00U);
     Mock_SetBootConfig(0xEF4019U, 4096U, FLASH_FEAT_QUAD);
-    /* SW-021: crc is no longer the last field of the block (spi_hz was appended
-     * after it), so address it by offset. "Last byte" would now flip the clock
-     * field, which is deliberately outside the checksum window. */
+    /* SW-021: crc 가 더는 block 의 마지막 field 가 아니다(spi_hz 를 뒤에 덧붙였다).
+     * 그래서 offset 으로 접근한다. "마지막 byte" 로 쓰면 이제 clock field 를
+     * 건드리게 되는데, 그 field 는 일부러 checksum window 밖에 있다. */
     s_mock.config_buf[offsetof(FLASH_BOOT_CONFIG, crc)] ^= 0xFFU;
     status = Flash_BootInit(0x00000000U);
     assert(status == FLASH_ERR_PARAM);
@@ -913,10 +913,9 @@ static void Test_DirectSPIQuadGuard(void)
     status = Flash_Read(0x00001000U, aligned_buf, 16U, FLASH_READ_FAST,
                         FLASH_READ_UNIT_WORD, 0U);
     assert(status == FLASH_OK);
-    /* QPI (4-4-4) is listed in the read-mode enum but deliberately NOT
-     * implemented. Both transfer paths must refuse it with a dedicated error
-     * (not FLASH_ERR_PARAM) so a caller can tell "unknown mode" from
-     * "known but unsupported". */
+    /* QPI(4-4-4)는 read-mode enum 에 있지만 일부러 구현하지 않았다. 두 전송 경로
+     * 모두 전용 error(FLASH_ERR_PARAM 이 아님)로 거절해야, 호출자가 "모르는 mode"
+     * 와 "알지만 미지원"을 구분할 수 있다. */
     status = Flash_Read(0x00001000U, aligned_buf, 16U, FLASH_READ_QPI,
                         FLASH_READ_UNIT_WORD, 0U);
     assert(status == FLASH_ERR_UNSUPPORTED);
@@ -948,11 +947,11 @@ static void Test_ProtectUnprotect(void)
     printf("  - Protect sets BP bits, Unprotect clears them. PASSED.\n\n");
 }
 
-/* SW-037: the driver must NOT unlock the chip by itself any more.
- * The old TEST 14 asserted the opposite ("a write clears the BP bits"), so the
- * test is inverted together with the contract: a program or erase aimed at a
- * still-protected part must leave SR1 alone and must not put a single status
- * write frame on the bus. Flash_Unprotect() is what the caller does instead. */
+/* SW-037: driver 는 더는 칩을 스스로 unlock 하지 않는다.
+ * 예전 TEST 14 는 반대("write 가 BP bit 를 지운다")를 주장했으므로, 계약이
+ * 바뀐 것과 함께 test 도 뒤집는다: 아직 보호된 부품을 향한 program/erase 는
+ * SR1 을 그대로 두어야 하고, status write frame 을 단 하나도 bus 에 올려서는
+ * 안 된다. 대신 호출자가 Flash_Unprotect() 를 부른다. */
 static void Test_WriteKeepsProtect(void)
 {
     uint8_t write_buffer[8];
@@ -1052,12 +1051,11 @@ static void Test_AddrModeOpcodes(void)
     assert(s_mock.entered_4byte[0] == true);             /* B7h sent */
     printf("  - Method B (Enter-4B) used 3B opcode 0x%02X + sent B7h. PASSED.\n\n", g_p_sfc_regs->CMD);
 
-    /* (4) A boot block whose addr_mode is not 0..3, with a CORRECT CRC, must be
-     * refused. Without the range guard it would be cast as-is: neither Method A
-     * nor Method B, therefore 3-byte opcodes with a 4-byte address and no B7h -
-     * the chip would shift the extra address byte out as data. Silent misread,
-     * FLASH_OK returned. The CRC cannot catch this: the bytes did arrive intact,
-     * they just mean nothing. */
+    /* (4) addr_mode 가 0..3 이 아닌데 CRC 는 CORRECT 인 boot block 은 거절해야 한다.
+     * 범위 가드가 없으면 그 값이 그대로 cast 되어 Method A 도 B 도 아니게 되고,
+     * 따라서 3-byte opcode + 4-byte address + B7h 없음이 된다 — 칩은 남는 address
+     * byte 를 data 로 밀어낸다. 조용한 오독, 그리고 FLASH_OK 반환. CRC 로는 잡을 수
+     * 없다: byte 는 온전히 도착했고, 다만 의미가 없을 뿐이다. */
     {
         FLASH_BOOT_CONFIG bad;
         Mock_Reset();
@@ -1191,8 +1189,8 @@ static void Test_VendorDensityResolution(void)
                rows[i].name, p->flash_size / 1024U, p->addr_bytes);
     }
 
-    /* (b) The rows the old table did not have are now FREE: the density byte
-     *     alone describes them. This is the whole point of SW-041. */
+    /* (b) 예전 table 에 행이 없던 것들이 이제 자유롭다: density byte 하나로 설명된다.
+     * 이것이 SW-041 의 요점 전체다. */
     assert(Flash_FindDevice(0xEF4015U)->flash_size ==  2UL*1024UL*1024UL); /* W25Q16JV */
     assert(Flash_FindDevice(0xEF4016U)->flash_size ==  4UL*1024UL*1024UL); /* W25Q32JV */
     assert(Flash_FindDevice(0xEF4017U)->flash_size ==  8UL*1024UL*1024UL); /* W25Q64JV */
@@ -1345,7 +1343,7 @@ static void Test_VsrWrenNoWel(void)
 
     /* GD25LQ64E datasheet 7.5: "The Write Enable for Volatile Status Register
      * command will not set the Write Enable Latch bit, it is only valid for
-     * the Write Status Register command". Winbond W25Q series is identical. */
+     * the Write Status Register command". Winbond W25Q 계열도 같다. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xC86017U;
     Mock_SetStatus(0x00U, 0x00U, 0x00U);
@@ -1394,15 +1392,15 @@ static void Test_DummyCfgPerModel(void)
         const FLASH_INFO *info = Flash_FindDevice(models[i].jedec);
         assert(info != NULL);
 
-        /* Wire order: CMD -> ADDR -> DUMMY_LAST (first dummy = M7-M0)
-         * -> DUMMY_VAL -> DATA. Trailing dummy bytes are don't care. */
+        /* 선로 순서: CMD -> ADDR -> DUMMY_LAST (첫 dummy = M7-M0)
+         * -> DUMMY_VAL -> DATA. 뒤에 붙는 dummy byte 는 don't care. */
         assert(info->read_cfg[FLASH_READ_DUAL_IO].dummy_last  == models[i].dummy_last);
         assert(info->read_cfg[FLASH_READ_DUAL_IO].dummy_value == 0x00U);
         assert(info->read_cfg[FLASH_READ_QUAD_IO].dummy_last  == models[i].dummy_last);
         assert(info->read_cfg[FLASH_READ_QUAD_IO].dummy_value == 0x00U);
 
-        /* mode_byte must stay 0x00: M7-M0 rides on DUMMY_LAST.
-         * (0x20 would enter Winbond Read Command Bypass / GD AXh rules) */
+        /* mode_byte 는 0x00 이어야 한다: M7-M0 은 DUMMY_LAST 로 실린다.
+         * (0x20 이면 Winbond Read Command Bypass / GD AXh 규칙으로 들어간다) */
         assert(info->read_cfg[FLASH_READ_DUAL_IO].mode_byte == 0x00U);
         assert(info->read_cfg[FLASH_READ_QUAD_IO].mode_byte == 0x00U);
     }
@@ -1514,9 +1512,9 @@ static void Test_NoConnectRefusesDataPath(void)
     Mock_SetStatus(0x00U, 0x02U, 0x00U);
     assert(Flash_Init() == FLASH_OK);
 
-    /* 2. The device disappears; re-init detects it and enters NO_CONNECT.
-     *    The handle still holds the previous model, which is exactly why the
-     *    data path must look at the driver state, not only at info != NULL. */
+    /* 2. 부품이 사라진다. re-init 이 그것을 감지해 NO_CONNECT 로 들어간다.
+     *    handle 은 앞서의 model 을 그대로 들고 있는데, data path 가 info != NULL
+     *    만이 아니라 driver state 까지 봐야 하는 이유가 바로 이것이다. */
     s_mock.mock_jedec_id = 0x000000U;
     assert(Flash_Init() == FLASH_ERR_NO_CONNECT);
     assert(Flash_GetState() == FLASH_STATE_NO_CONNECT);
@@ -1681,13 +1679,12 @@ static void Test_BusyGateAndStatusReadBack(void)
 }
 
 /* ---------------------------------------------------------------------------
- * [TEST 30] SW-021: the boot settings block carries the SPI clock
+ * [TEST 30] SW-021: boot settings block 이 SPI clock 을 함께 나른다
  *
- * The clock is not a compile-time constant any more: it travels in the block
- * that Flash_BasicRead() fetches at 10 MHz, and only reaches the bus once that
- * block has passed magic + checksum + family checks. The interesting part is
- * the compatibility valve - an older 24-byte block has no clock field at all,
- * and that must not turn into a failed boot.
+ * clock 은 더 이상 compile-time 상수가 아니다: Flash_BasicRead() 가 10 MHz 로
+ * 가져오는 block 안에 실려 오고, 그 block 이 magic + checksum + family 검사를
+ * 통과한 뒤에야 bus 에 적용된다. 흥미로운 부분은 호환용 안전판이다 — 예전
+ * 24-byte block 에는 clock field 가 아예 없고, 그것이 부팅 실패가 되어서는 안 된다.
  * ------------------------------------------------------------------------- */
 static void Test_BootConfigCarriesSpiClock(void)
 {
@@ -1701,9 +1698,9 @@ static void Test_BootConfigCarriesSpiClock(void)
     assert(Flash_BootInit(0x00000000U) == FLASH_OK);
     assert(s_mock.spi_speed_hz == 24000000U);
 
-    /* (2) Old 24-byte block: the 4 bytes after crc read back as 0xFF on erased
-     *     Flash. The block must still validate, the boot must still succeed,
-     *     and the driver must keep the safe 10 MHz bring-up clock. */
+    /* (2) 예전 24-byte block: crc 뒤 4 byte 는 지워진 Flash 에서 0xFF 로 읽힌다.
+     *     그래도 block 은 검증되어야 하고, 부팅은 성공해야 하며, driver 는 안전한
+     *     10 MHz bring-up clock 을 유지해야 한다. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF4019U;
     Mock_SetStatus(0x00U, 0x00U, 0x00U);
@@ -1711,8 +1708,8 @@ static void Test_BootConfigCarriesSpiClock(void)
     assert(Flash_BootInit(0x00000000U) == FLASH_OK);
     assert(s_mock.spi_speed_hz == 10000000U);         /* unchanged */
 
-    /* (3) Absurd value (e.g. a bit flip that stays a plausible u32): same valve.
-     *     Nothing on a Flash part runs at 200 MHz, so it is ignored, not trusted. */
+    /* (3) 말도 안 되는 값(bit flip 이지만 u32 로는 그럴듯한 값): 같은 안전판.
+     *     Flash 부품이 200 MHz 로 도는 일은 없으므로, 믿지 않고 무시한다. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF4019U;
     Mock_SetStatus(0x00U, 0x00U, 0x00U);
@@ -1720,9 +1717,9 @@ static void Test_BootConfigCarriesSpiClock(void)
     assert(Flash_BootInit(0x00000000U) == FLASH_OK);
     assert(s_mock.spi_speed_hz == 10000000U);
 
-    /* (4) The field is outside the checksum window on purpose (append-only kept
-     *     old blocks valid). Prove that a garbage clock does NOT masquerade as a
-     *     broken block: the handle still comes up READY. */
+    /* (4) 이 field 는 일부러 checksum window 밖에 있다(덧붙이기만 해서 예전 block 을
+     *     유효하게 유지했다). garbage clock 이 깨진 block 인 척하지 않는다는 것을
+     *     증명한다: handle 은 여전히 READY 로 올라온다. */
     assert(Flash_GetState() == FLASH_STATE_READY);
     assert(Flash_IsLocked() == true);
 
@@ -1730,12 +1727,12 @@ static void Test_BootConfigCarriesSpiClock(void)
 }
 
 /******************************************************************************
- * [TEST 31] SW-030: GigaDevice density coverage (16Mb / 32Mb / 64Mb)
+ * [TEST 31] SW-030: GigaDevice 용량 커버리지 (16Mb / 32Mb / 64Mb)
  *
- * The GD25LQ family keeps ONE command set across densities - only the JEDEC
- * capacity byte and the array size change. This test proves the table carries
- * all three, and that each one boots, enables QE in SR2 and still addresses
- * with three bytes on the wire.
+ * GD25LQ 계열은 용량이 달라도 command set 이 하나다 — 바뀌는 것은 JEDEC capacity
+ * byte 와 배열 크기뿐이다. 이 test 는 table 이 세 용량을 모두 담고 있고, 각각이
+ * 부팅하며 SR2 의 QE 를 켜고 선로에는 여전히 3 byte address 로 접근한다는 것을
+ * 증명한다.
  ******************************************************************************/
 static void Test_GigaDeviceDensities(void)
 {
@@ -1794,9 +1791,9 @@ static void Test_GigaDeviceDensities(void)
                parts[i].name, (unsigned)(parts[i].size / 1024U));
     }
 
-    /* 5) SW-041 contract change: a density that never had a table row is no
-     *    longer "unsupported" - the vendor row plus the density byte describe
-     *    it. GD25LQ128E (0xC86018) was refused before and now just works. */
+    /* 5) SW-041 계약 변경: table 행이 없던 용량도 이제 "미지원"이 아니다 —
+     *    vendor 행 + density byte 가 그것을 설명한다. GD25LQ128E(0xC86018)는
+     *    예전에는 거절되었지만 지금은 그냥 동작한다. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xC86018U;
     Mock_SetStatus(0x1CU, 0x00U, 0x00U);
@@ -1813,17 +1810,16 @@ static void Test_GigaDeviceDensities(void)
 }
 
 /******************************************************************************
- * [TEST 32] SW-035: block protect must survive a power cycle
+ * [TEST 32] SW-035: block protect 는 power cycle 을 견뎌야 한다
  *
- * The status register exists twice inside the part: a non-volatile copy that
- * is loaded at power-up, and a volatile copy that 05h/35h/15h read back.
- * A 01h frame writes the non-volatile copy only when it was armed by 06h;
- * armed by 50h it writes just the volatile copy.
+ * status register 는 부품 안에 두 벌로 존재한다: power-up 때 적재되는
+ * non-volatile copy 와, 05h/35h/15h 가 읽는 volatile copy. 01h frame 은 06h 로
+ * 무장했을 때만 non-volatile copy 를 쓰고, 50h 로 무장하면 volatile copy 만 쓴다.
  *
- * Before SW-035 every status write on a FLASH_FEAT_VSR_WREN part was armed
- * with 50h, so Flash_Protect() looked correct in the tests (the mock kept a
- * single copy) while the protection disappeared at the next power-up on real
- * hardware. This test models both copies and cuts the power.
+ * SW-035 이전에는 FLASH_FEAT_VSR_WREN 부품의 모든 status write 가 50h 로
+ * 무장되었기 때문에, Flash_Protect() 가 test 에서는 맞아 보였지만(mock 이 한 벌만
+ * 두었다) 실제 hardware 에서는 다음 power-up 에서 보호가 사라졌다. 이 test 는 두
+ * 벌을 모두 model 로 두고 전원을 끊는다.
  ******************************************************************************/
 static void Test_ProtectSurvivesPowerCycle(void)
 {
@@ -1853,10 +1849,10 @@ static void Test_ProtectSurvivesPowerCycle(void)
     assert(s_mock.vsr_wren_count == vsr_before_protect);  /* no 50h here */
     assert((s_mock.nv_sr1[0] & 0x08U) != 0U);    /* durable copy written */
 
-    /* The 01h frame on these parts is 16-bit, so it necessarily programs SR2
-     * as well - the QE bit that is live at that moment therefore becomes
-     * durable too. Harmless (QE only matters for quad commands) but it must be
-     * understood, not discovered: this assertion documents it. */
+    /* 이 부품들의 01h frame 은 16-bit 이므로 SR2 도 반드시 program 된다 — 그 순간
+     * 살아 있는 QE bit 도 함께 영구화된다. 무해하지만(QE 는 quad command 에만
+     * 의미가 있다) 발견이 아니라 이해가 되어야 하므로, 이 assertion 이 그것을
+     * 문서로 남긴다. */
     assert((s_mock.nv_sr2[0] & 0x02U) != 0U);
 
     Mock_PowerCycle();
@@ -1879,8 +1875,8 @@ static void Test_ProtectSurvivesPowerCycle(void)
     Mock_PowerCycle();
     assert((s_mock.sr1[0] & 0x1CU) == 0x1CU);
 
-    /* (5) Macronix has no volatile arm at all: 06h is the only option, so this
-     *     path must keep working without FLASH_FEAT_VSR_WREN. */
+    /* (5) Macronix 에는 volatile 무장 자체가 없다: 06h 가 유일한 선택지이므로,
+     * 이 경로는 FLASH_FEAT_VSR_WREN 없이도 계속 동작해야 한다. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xC22010U;            /* MX25L512 */
     Mock_SetStatus(0x00U, 0x00U, 0x00U);
@@ -1890,9 +1886,9 @@ static void Test_ProtectSurvivesPowerCycle(void)
     Mock_PowerCycle();
     assert((s_mock.sr1[0] & 0x08U) != 0U);
 
-    /* (6) Ordering: a protect issued while the part is still finishing its
-     *     previous cycle must wait first. Without the idle check the 06h arm
-     *     is dropped during WIP=1 and the 01h frame goes with it. */
+    /* (6) 순서: 앞선 주기를 아직 끝내는 중인 부품에 protect 를 걸면 먼저 기다려야
+     *     한다. idle 검사가 없으면 WIP=1 동안 06h 무장이 버려지고 01h frame 도
+     *     함께 사라진다. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xC86017U;
     Mock_SetStatus(0x00U, 0x00U, 0x00U);
@@ -1934,15 +1930,15 @@ static void Test_AddressRangeRefused(void)
     assert(Flash_Read(0x7FFFFEU, buf, 4U, FLASH_READ_SINGLE,
                       FLASH_READ_UNIT_BYTE, 0U) == FLASH_ERR_PARAM);
 
-    /* (3) Write is refused *before* the bus is touched: a program command with a
-     *     wrapped address is exactly how the bootloader sector gets destroyed. */
+    /* (3) write 는 bus 를 건드리기 *전에* 거절된다: address 가 wrap 된 program
+     *     command 가 바로 bootloader sector 를 파괴하는 경로다. */
     memset(&s_xfer, 0, sizeof(s_xfer));
     assert(Flash_Write(0x800000U, buf, 4U, FLASH_PROGRAM_SINGLE) == FLASH_ERR_PARAM);
     assert(Flash_Write(0x7FFFFFU, buf, 2U, FLASH_PROGRAM_SINGLE) == FLASH_ERR_PARAM);
     assert(s_xfer.frames == 0U);          /* nothing left the driver */
 
-    /* (4) Erase: the target must start inside the part. The chip aligns the
-     *     erase down to the sector, so 0x7FFFFF is a legitimate in-range call. */
+    /* (4) erase: 대상이 부품 안에서 시작해야 한다. 칩은 erase 주소를 sector 로
+     *     내림 정렬하므로 0x7FFFFF 은 정당한 in-range 호출이다. */
     assert(Flash_Erase(0x800000U, FLASH_ERASE_SECTOR) == FLASH_ERR_PARAM);
     assert(Flash_Erase(0x7FFFFFU, FLASH_ERASE_SECTOR) == FLASH_OK);
 
@@ -1953,9 +1949,8 @@ static void Test_AddressRangeRefused(void)
     assert(Flash_Read(0xFFFFFFF0U, buf, 0x20U, FLASH_READ_SINGLE,
                       FLASH_READ_UNIT_BYTE, 0U) == FLASH_ERR_PARAM);
 
-    /* (6) Multi-die: flash_size is the total across the stack (2 x 32 MiB), so
-     *     a read may cross the die boundary at 0x2000000, while the byte after
-     *     the whole stack (0x4000000) is refused. */
+    /* (6) multi-die: flash_size 는 stack 전체(2 x 32 MiB)이므로, read 는 0x2000000
+     *     에서 die 경계를 넘을 수 있지만, stack 전체 다음 byte(0x4000000)는 거절된다. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF6119U;                 /* W25M512JV */
     Mock_SetStatus(0x00U, 0x02U, 0x00U);
@@ -1972,18 +1967,18 @@ static void Test_AddressRangeRefused(void)
 }
 
 /*============================================================================
- * TEST 34 (SW-042): the address mode is read back from SR3, not assumed,
- * and a 4-Byte part is never driven in 3-Byte mode.
+ * TEST 34 (SW-042): address mode 는 가정하지 않고 SR3 에서 되읽으며,
+ * 4-Byte 부품은 3-Byte mode 로 구동되지 않는다.
  *
- *   W25Q256JV 7.1.5/7.1.6 puts the live mode in SR3.ADS (bit0) and the power-up
- *   mode in SR3.ADP (bit1). Four situations matter:
- *     1. powered up in 4-Byte mode (ADP=1, ADS=1)  -> reported as 1/1
- *     2. powered up in 3-Byte mode (ADP=0, ADS=0)  -> still usable, because the
- *        driver sends the dedicated 4-Byte opcodes (0x0C/0x12/0x21) that ignore
- *        the mode setting (6.1.4)
- *     3. someone forces 3-Byte mode on a 32 MB die -> refused instead of quietly
- *        wrapping every address above 16 MB
- *     4. a 16 MB part has no ADS/ADP       -> UNSUPPORTED, not a fake 0/0
+ *   W25Q256JV 7.1.5/7.1.6 은 현재 mode 를 SR3.ADS(bit0), power-up mode 를
+ *   SR3.ADP(bit1)에 둔다. 중요한 상황은 넷이다:
+ *     1. 4-Byte mode 로 power-up (ADP=1, ADS=1)  -> 1/1 로 보고
+ *     2. 3-Byte mode 로 power-up (ADP=0, ADS=0)  -> 그래도 쓸 수 있다. driver 가
+ *        mode 설정을 무시하는 전용 4-Byte opcode(0x0C/0x12/0x21)를 보내기 때문이다
+ *        (6.1.4)
+ *     3. 32 MB die 에 누가 3-Byte mode 를 강제 -> 16 MB 위 주소를 조용히 wrap 하는
+ *        대신 거절
+ *     4. 16 MB 부품에는 ADS/ADP 가 없음       -> 가짜 0/0 이 아니라 UNSUPPORTED
  *============================================================================*/
 static void Test_Sr3AddressMode(void)
 {
@@ -2066,20 +2061,20 @@ static void Test_Sr3AddressMode(void)
 }
 
 /******************************************************************************
- * [TEST 35] SW-043: GigaDevice 3V and 1.8V parts do not share a WRSR frame
+ * [TEST 35] SW-043: GigaDevice 3V 와 1.8V 부품은 WRSR frame 을 공유하지 않는다
  *
- * Both families put QE at SR2 bit 1 and BP4 at SR1 bit 6, and both use the
- * same density byte, so the old vendor-wide "16-bit WRSR" flag looked right
- * for every GigaDevice part. It is only right for GD25LQ:
+ * 두 계열 모두 QE 를 SR2 bit 1 에, BP4 를 SR1 bit 6 에 두고 density byte 도
+ * 같아서, 예전의 vendor 단위 "16-bit WRSR" flag 는 모든 GigaDevice 부품에 맞아
+ * 보였다. 그것이 맞는 것은 GD25LQ 뿐이다:
  *
- *   GD25Q32E  Rev1.5 7.4 - 01H / 31H / 11H each carry ONE status byte, and
+ *   GD25Q32E  Rev1.5 7.4 - 01H / 31H / 11H 는 각각 status byte 하나를 나르고,
  *                          "CS# must be driven high after the eighth bit ...
  *                          Otherwise, the WRSR command is not executed."
- *   GD25LQ32E Rev1.4 7.4 - 16 bits are mandatory; stopping at 8 clears SR2.
+ *   GD25LQ32E Rev1.4 7.4 - 16 bit 가 필수이고, 8 bit 에서 멈추면 SR2 가 지워진다.
  *
- * So a GD25Q32E (0xC84016) that receives a 3-byte 01h frame never turns QE on:
- * the init read-back fails with FLASH_ERR_WRITE_FAIL and the part is unusable.
- * The memory-type byte (0x40 vs 0x60) is the only thing that tells them apart.
+ * 그래서 3-byte 01h frame 을 받은 GD25Q32E(0xC84016)는 QE 를 절대 켜지 못한다:
+ * init read-back 이 FLASH_ERR_WRITE_FAIL 로 실패하고 부품을 쓸 수 없다.
+ * 이 둘을 구분해 주는 것은 memory-type byte(0x40 vs 0x60) 뿐이다.
  ******************************************************************************/
 static void Test_GdWrsrFamilySplit(void)
 {

@@ -9,7 +9,7 @@
 
 /******************************************************************************
  * Hardware Abstraction Hooks
- * (In target TCON SoC firmware, replace these stubs with actual register access)
+ * (실제 TCON SoC 펌웨어에서는 이 stub 을 register access 로 교체한다)
  ******************************************************************************/
 
 #ifndef __WEAK
@@ -24,28 +24,28 @@
 
 __WEAK void Flash_SPI_Init(void)
 {
-    /* Initialize SPI controller registers, baud rate, CPOL=0, CPHA=0 */
+    /* SPI controller register 초기화 — baud rate, CPOL=0, CPHA=0 */
 }
 
 __WEAK void Flash_SPI_SetSpeed(uint32_t speed_hz)
 {
-    /* Configure SPI clock divider to match requested frequency */
+    /* 요청한 주파수에 맞도록 SPI clock divider 설정 */
     (void)speed_hz;
 }
 
 __WEAK void Flash_SPI_CS_Low(void)
 {
-    /* Drive /CS GPIO or hardware SPI CS pin LOW */
+    /* /CS GPIO 또는 hardware SPI CS pin 을 LOW 로 */
 }
 
 __WEAK void Flash_SPI_CS_High(void)
 {
-    /* Drive /CS GPIO or hardware SPI CS pin HIGH */
+    /* /CS GPIO 또는 hardware SPI CS pin 을 HIGH 로 */
 }
 
 __WEAK uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 {
-    /* Write tx_byte to SPI data register, poll TXE/RXNE, return received byte */
+    /* tx_byte 를 SPI data register 에 쓰고 TXE/RXNE 를 poll 한 뒤 수신 byte 반환 */
     (void)tx_byte;
     return 0xFFU;
 }
@@ -53,7 +53,7 @@ __WEAK uint8_t Flash_SPI_TransferByte(uint8_t tx_byte)
 /******************************************************************************
  * Buffered transfer engine (SW-016)
  *
- * Target BSP replacement (one register kick, no per-byte polling):
+ * 실제 BSP 에서는 아래처럼 register 한 번으로 끝낸다(byte 별 poll 없음):
  *   SPI->TX_LEN   = xfer->tx_len;
  *   SPI->DATA_LEN = xfer->data_len;
  *   SPI->QUAD_LEN = xfer->quad_len;
@@ -73,19 +73,19 @@ __WEAK void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
 
     Flash_SPI_CS_Low();
 
-    /* Phase 1: command + address + dummy (1 data line) */
+    /* Phase 1: command + address + dummy — 1 line 전송 */
     if ((xfer->tx_buf != NULL) && (xfer->tx_len > 0U)) {
         for (uint32_t i = 0U; i < xfer->tx_len; i++) {
             (void)Flash_SPI_TransferByte(xfer->tx_buf[i]);
         }
     }
 
-    /* Phase 2: 1-bit data payload (Page Program 02h) */
+    /* Phase 2: 1-bit data payload — Page Program(02h) */
     if ((xfer->data_buf != NULL) && (xfer->data_len > 0U)) {
         Flash_SPI_WriteData(xfer->data_buf, xfer->data_len);
     }
 
-    /* Phase 3: 4-bit data payload (Quad Page Program 32h) */
+    /* Phase 3: 4-bit data payload — Quad Page Program(32h) */
     if ((xfer->quad_buf != NULL) && (xfer->quad_len > 0U)) {
         Flash_SPI_WriteQuadData(xfer->quad_buf, xfer->quad_len);
     }
@@ -132,6 +132,6 @@ void Flash_SPI_WriteData(const uint8_t *buf, uint32_t len)
 
 __WEAK void Flash_SPI_WriteQuadData(const uint8_t *buf, uint32_t len)
 {
-    /* Hardware Quad SPI FIFO write or multi-bit transfer */
+    /* hardware Quad SPI FIFO write 또는 multi-bit transfer */
     Flash_SPI_WriteData(buf, len);
 }

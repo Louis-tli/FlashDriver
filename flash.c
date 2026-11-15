@@ -37,10 +37,9 @@ FLASH_HANDLE g_flash_handle =
 /******************************************************************************
  * Helpers: one-frame SPI transfers (SW-016)
  *
- *   The opcode, address and dummy bytes are packed into one small header buffer
- *   and the whole operation is handed to Flash_SPI_Transact() as a single /CS
- *   frame (tx_len / data phase / rx_len), instead of poking SPI bytes one at a
- *   time from every call site.
+ *   opcode, address, dummy byte 를 작은 header buffer 에 모으고, 동작 전체를
+ *   Flash_SPI_Transact() 에 /CS frame 하나로 넘긴다(tx_len / data phase / rx_len).
+ *   호출부마다 SPI byte 를 하나씩 찔러 넣던 방식은 쓰지 않는다.
  ******************************************************************************/
 static int Flash_SpiReadFrame(uint8_t cmd, uint32_t addr, uint8_t addr_bytes,
                               const FLASH_READ_CFG *read_cfg,
@@ -85,7 +84,7 @@ static int Flash_SpiWriteFrame(uint8_t cmd, uint32_t addr, uint8_t addr_bytes,
 }
 
 /******************************************************************************
- * Helper: raw command frame with an arbitrary opcode + payload (no address).
+ * Helper: 임의의 opcode + payload 로 raw command frame 을 보낸다(address 없음).
  ******************************************************************************/
 static void Flash_SpiRawFrame(const uint8_t *bytes, uint32_t len)
 {
@@ -93,9 +92,43 @@ static void Flash_SpiRawFrame(const uint8_t *bytes, uint32_t len)
     Flash_SPI_Transact(&xfer);
 }
 
+
+/******************************************************************************
+ * Public API: Flash_SelectDie (W25M512)
+ ******************************************************************************/
+int Flash_SelectDie(uint8_t die_idx)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+    if (info == NULL) {
+        return FLASH_ERR_PARAM;
+    }
+    /* Single die: nothing to select, and the caller may pass any index */
+    if (info->die_count < 2U) {
+        return FLASH_OK;
+    }
+
+    if (die_idx >= info->die_count) {
+        return FLASH_ERR_PARAM;
+    }
+
+    if (g_flash_handle.current_die == die_idx) {
+        return FLASH_OK;
+    }
+
+    /* Winbond Software Die Select (C2h + die_id) — one CS frame */
+    const uint8_t frame[2] = { F_CMD_WINBOND_DIE_SELECT, die_idx };
+    Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
+
+    Flash_DelayUs(50U);         /* die-select settle (SW-014: was 500 loops) */
+    g_flash_handle.current_die = die_idx;
+
+    return FLASH_OK;
+}
+
+
 /******************************************************************************
  * Helper: Resolve Multi-Die Address & Die Index (W25M512)
- * (Short delays now use Flash_DelayUs from flash_delay.c — SW-014)
+ * (짧은 지연은 flash_delay.c 의 Flash_DelayUs 를 쓴다 — SW-014)
  ******************************************************************************/
 static int Flash_CheckDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
 {
@@ -104,8 +137,8 @@ static int Flash_CheckDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
         return FLASH_ERR_PARAM;
     }
 
-    /* die_size == 0 means "one die" - the table only fills it in for a stack,
-     * so this is the whole test (SW-044). */
+    /* die_size == 0 은 "die 하나"라는 뜻이다 — table 은 stack 인 경우에만 이 값을
+     * 채우므로, 이것만 검사하면 된다(SW-044). */
     if (info->die_size != 0U) {
         /* Which die does this address land on, and where inside that die? */
         const uint8_t target_die = (uint8_t)(addr / info->die_size);
@@ -121,22 +154,26 @@ static int Flash_CheckDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
         *p_die_addr = addr;
     }
 
+    int status = Flash_SelectDie(*p_die);
+    if (status != FLASH_OK) {
+        return status;
+    } 
+
     return FLASH_OK;
 }
 
 /******************************************************************************
  * Helper: Reject a transfer that leaves the device (SW-036)
  *
- *   The chip does NOT police the address. Address bits above the capacity are
- *   simply not decoded, so an offset past the end wraps around to the start of
- *   the array. On a real board that means a wrong offset/len in the caller
- *   silently programs over the first sectors (usually the bootloader) and every
- *   call still returns FLASH_OK - the worst kind of failure: data corruption
- *   with no error.
+ *   칩은 주소를 검사하지 않는다. 용량을 넘는 address bit 는 그냥 decode 되지
+ *   않아서, 끝을 넘어선 offset 은 배열의 시작으로 되돌아간다(wrap). 실제
+ *   board 에서 이는 호출자의 offset/len 실수가 첫 sector(보통 bootloader)를
+ *   조용히 덮어쓰고도 모든 호출이 FLASH_OK 를 돌려준다는 뜻이다 — 가장 나쁜
+ *   종류의 고장: error 없이 data 가 깨진다.
  *
- *   Two compares here turn that into FLASH_ERR_PARAM. The subtraction form is
- *   deliberate: "addr + len" would overflow for addresses near 0xFFFFFFFF and
- *   pass a naive check.
+ *   여기서 비교 두 번으로 그것을 FLASH_ERR_PARAM 으로 바꾼다. 뺄셈 형태를 쓰는
+ *   것은 의도적이다: "addr + len" 은 0xFFFFFFFF 근처 주소에서 overflow 되어
+ *   순진한 검사를 통과해 버린다.
  ******************************************************************************/
 static int Flash_CheckRange(uint32_t addr, uint32_t len)
 {
@@ -162,36 +199,35 @@ static int Flash_CheckRange(uint32_t addr, uint32_t len)
 }
 
 /******************************************************************************
- * Helper: Resolve the active addressing mode (boot-config override or default)
+ * Helper: 지금 쓸 addressing mode 를 결정한다(boot-config 우선, 없으면 기본값)
  ******************************************************************************/
 static FLASH_ADDR_MODE Flash_ResolveAddrMode(uint8_t cfg_mode, const FLASH_INFO *info)
 {
-    /* A boot block can carry an addr_mode that is none of the four enum values
-     * (a corrupted write, or a value written by a newer tool and read by older
-     * code). The CRC only proves the bytes arrived intact, not that they mean
-     * anything, so the value has to be range-checked before it is cast.
+    /* boot block 에는 enum 네 값 중 어느 것도 아닌 addr_mode 가 들어 있을 수 있다
+     * (write 가 깨졌거나, 새 도구가 쓴 값을 예전 code 가 읽은 경우). CRC 는 byte
+     * 가 온전히 도착했다는 것만 증명하고 그 값의 의미까지 보증하지 않으므로,
+     * cast 하기 전에 범위를 검사해야 한다.
      *
-     * An unknown value falls back to 3-Byte on purpose. On a 4-byte device the
-     * guard in Flash_ApplyHandleConfig() then refuses the boot; without this
-     * line the chip would receive a 4th address byte while it is still in
-     * 3-byte mode, shift that byte out as data, and hand back wrong data with
-     * FLASH_OK. On a 3-byte device the result is identical to DEFAULT, so the
-     * fallback can never make a working board worse. */
+     * 모르는 값은 의도적으로 3-Byte 로 떨어뜨린다. 4-byte 부품이면
+     * Flash_ApplyHandleConfig() 의 가드가 부팅을 거절하고, 이 줄이 없으면 칩은
+     * 아직 3-byte mode 인데 4번째 address byte 를 받아 그것을 data 로 밀어내며
+     * 틀린 data 를 FLASH_OK 와 함께 돌려준다. 3-byte 부품에서는 결과가 DEFAULT
+     * 와 같으므로, 이 fallback 이 멀쩡한 board 를 나쁘게 만들 수는 없다. */
     if (cfg_mode > (uint8_t)FLASH_ADDR_4BYTE_ENTER) {
         return FLASH_ADDR_3BYTE;
     }
 
     if (cfg_mode == (uint8_t)FLASH_ADDR_MODE_DEFAULT) {
-        /* Default: derive from the device's native width (Method A for 4-Byte). */
+        /* 기본값: 부품의 native width 에서 유도한다(4-Byte 부품은 Method A). */
         return (info->addr_bytes == 4U) ? FLASH_ADDR_4BYTE_OPCODE : FLASH_ADDR_3BYTE;
     }
     return (FLASH_ADDR_MODE)cfg_mode;
 }
 
 /******************************************************************************
- * Helper: Apply non-common config to the ACTIVE die (4-Byte mode + QE).
- *   Every die of a multi-die stack has its own status registers, so this must
- *   run once per die (SW-013 / G1).
+ * Helper: ACTIVE die 에 공통이 아닌 설정(4-Byte mode + QE)을 적용한다.
+ *   multi-die stack 은 die 마다 status register 가 따로 있으므로, 이 작업은
+ *   die 당 한 번씩 실행해야 한다(SW-013 / G1).
  ******************************************************************************/
 static int Flash_ApplyDieConfig(void)
 {
@@ -201,22 +237,22 @@ static int Flash_ApplyDieConfig(void)
     }
 
     /* Enter-4-Byte mode (B7h) is only needed for Method B (FLASH_ADDR_4BYTE_ENTER). */
-    if (Flash_CmdNeedsEnter4b(g_flash_handle.addr_mode)) {
+    if ( g_flash_handle.addr_mode == FLASH_ADDR_4BYTE_ENTER) {
         Flash_SPI_SendCmd(F_CMD_ENTER_4BYTE_ADDR);
         (void)Flash_WaitBusy(10000U);
     }
 
-    /* SW-042: confirm the address mode instead of assuming it.
+    /* SW-042: address mode 를 가정하지 말고 확인한다.
      *
-     *   W25Q256JV keeps the live mode in SR3.ADS and the power-up mode in
-     *   SR3.ADP (datasheet 7.1.5 / 7.1.6). Read it AFTER the optional B7h, so
-     *   ADS describes the mode this die is actually in right now.
+     *   W25Q256JV 는 현재 mode 를 SR3.ADS 에, power-up mode 를 SR3.ADP 에 둔다
+     *   (datasheet 7.1.5 / 7.1.6). 선택적인 B7h 뒤에 읽으므로 ADS 는 이 die 가
+     *   지금 실제로 들어가 있는 mode 를 뜻한다.
      *
-     *   Every die of a stack has its own status registers, so this runs once
-     *   per die from Flash_ApplyProductInit(); the handle keeps the last read,
-     *   which is the active die's answer.
+     *   stack 의 die 마다 status register 가 따로 있어서, 이 동작은
+     *   Flash_ApplyProductInit() 에서 die 당 한 번 실행된다. handle 은 마지막
+     *   으로 읽은 값, 즉 active die 의 답을 보관한다.
      *
-     *   A part without the bits is skipped, never guessed at. */
+     *   해당 bit 가 없는 부품은 건너뛴다 — 추측하지 않는다. */
     if ((info->features & FLASH_FEAT_SR3_ADDR_MODE) != 0U) {
         const int sr_status = Flash_ReadStatus(3U, &g_flash_handle.sr3);
         if (sr_status != FLASH_OK) {
@@ -234,7 +270,7 @@ static int Flash_ApplyDieConfig(void)
 }
 
 /******************************************************************************
- * Helper: Apply non-common init across ALL dies of the active device.
+ * Helper: active device 의 모든 die 에 공통이 아닌 init 을 적용한다.
  ******************************************************************************/
 static int Flash_ApplyProductInit(void)
 {
@@ -271,9 +307,9 @@ uint32_t Flash_ConfigCrc(const FLASH_BOOT_CONFIG *cfg)
     }
 
     const uint8_t *p = (const uint8_t *)cfg;
-    /* SW-021: the checksum window ends where crc begins, never at "sizeof - 4".
-     * spi_hz was appended after crc, so this keeps the window at exactly the
-     * original 20 bytes and a block written by older firmware still validates. */
+    /* SW-021: checksum window 는 crc 가 시작하는 곳에서 끝난다 — "sizeof - 4" 가
+     * 아니다. spi_hz 를 crc 뒤에 덧붙였기 때문에, 이렇게 해야 window 가 원래의
+     * 20 byte 그대로이고 예전 firmware 가 쓴 block 도 여전히 검증된다. */
     const uint32_t n = (uint32_t)offsetof(FLASH_BOOT_CONFIG, crc);
     uint32_t sum = 0x5A5A5A5AU;
     for (uint32_t i = 0U; i < n; i++) {
@@ -291,29 +327,28 @@ int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
         return FLASH_ERR_PARAM;
     }
 
-    /* 03h + 3-byte address works on every supported device in low memory.
-     * One frame: header out, data in. */
+    /* 03h + 3-byte address 는 지원하는 모든 부품의 low memory 에서 동작한다.
+     * header 내보내고 data 받는 frame 하나. */
     return Flash_SpiReadFrame(F_CMD_READ, addr, 3U, NULL, (uint8_t *)buf, len);
 }
 
 /******************************************************************************
  * Helper (SW-018): data-path gate.
  *
- * Read / Write / Erase / Protect are only allowed while the driver is READY.
+ * Read / Write / Erase / Protect 는 driver 가 READY 일 때만 허용한다.
  *
- * Why "info != NULL" alone is not enough: if a device that used to answer goes
- * away, a re-init sets NO_CONNECT, but the handle still points at the model it
- * found earlier. Without this check the driver would happily shift command and
- * address bytes onto a dead bus and return whatever floats in (0xFF), i.e. a
- * silent garbage read instead of a clear error.
+ * "info != NULL" 만으로는 부족한 이유: 답하던 부품이 사라지면 re-init 이
+ * NO_CONNECT 를 세우지만, handle 은 앞서 찾은 model 을 그대로 가리킨다. 이
+ * 검사가 없으면 driver 는 죽은 bus 에 command 와 address byte 를 밀어 넣고
+ * 떠다니는 값(0xFF)을 받아 온다 — 분명한 error 대신 조용한 garbage read 다.
  *
- * The probe/bring-up helpers (Flash_BasicRead, Flash_Reset, status polling)
- * deliberately do NOT use this gate: they must work before the driver is READY.
+ * probe/bring-up helper(Flash_BasicRead, Flash_Reset, status polling)는 이
+ * gate 를 일부러 쓰지 않는다: driver 가 READY 되기 전에도 동작해야 한다.
  ******************************************************************************/
 static int Flash_CheckConnect(void)
 {
-    /* Plain if-chain on purpose: a switch here made the compiler emit a
-     * 12-byte jump table in .rodata, which is silly for four values. */
+    /* 일부러 if-chain 으로 둔다: 여기를 switch 로 두면 compiler 가 .rodata 에
+     * 12-byte jump table 을 만든다. 값 네 개에 그건 과하다. */
     if (g_flash_handle.state == FLASH_STATE_READY) {
         return FLASH_OK;
     }
@@ -327,14 +362,14 @@ static int Flash_CheckConnect(void)
 }
 
 /******************************************************************************
- * Helper (SW-017): common bring-up + identification sequence.
+ * Helper (SW-017): 공통 bring-up + identification 순서.
  *
- * Flash_BootInitOpt() and Flash_InitOpt() used to carry their own copy of this
- * sequence (SPI/SFC init -> optional reset -> JEDEC ID -> floating-bus check).
- * Keeping one copy saves roughly 150 bytes of ROM.
+ * Flash_BootInitOpt() 와 Flash_InitOpt() 가 이 순서를 각자 복사해 들고 있었다
+ * (SPI/SFC init -> 선택적 reset -> JEDEC ID -> floating-bus 검사). 한 벌만
+ * 두면 ROM 이 약 150 byte 줄어든다.
  *
- * On success *p_jedec_id holds the 24-bit ID and the driver state is untouched.
- * On failure the fail-safe state (ERROR / NO_CONNECT) is already set.
+ * 성공하면 *p_jedec_id 에 24-bit ID 가 들어가고 driver state 는 건드리지 않는다.
+ * 실패하면 fail-safe state(ERROR / NO_CONNECT)가 이미 설정되어 있다.
  ******************************************************************************/
 static int Flash_ProbeBus(uint32_t options, uint32_t *p_jedec_id)
 {
@@ -370,8 +405,8 @@ static int Flash_ProbeBus(uint32_t options, uint32_t *p_jedec_id)
 }
 
 /******************************************************************************
- * Helper (SW-017): fill the runtime handle for the chosen device and apply its
- * per-die configuration (4-byte mode + QE). Shared by both init paths.
+ * Helper (SW-017): 선택한 부품에 맞게 runtime handle 을 채우고, die 별 설정
+ * (4-byte mode + QE)을 적용한다. 두 init 경로가 함께 쓴다.
  ******************************************************************************/
 static int Flash_ApplyHandleConfig(const FLASH_INFO *p_info,
                                    uint8_t cfg_addr_mode,
@@ -386,18 +421,16 @@ static int Flash_ApplyHandleConfig(const FLASH_INFO *p_info,
     g_flash_handle.sr3         = 0U;
     g_flash_handle.sr3_valid   = false;
 
-    /* SW-042: a 4-Byte part cannot be driven in 3-Byte mode.
+    /* SW-042: 4-Byte 부품은 3-Byte mode 로 구동할 수 없다.
      *
-     *   The driver has no Extended Address Register (C8h) path, so in 3-Byte
-     *   mode every address above 16 MB is silently dropped by the chip and wraps
-     *   to the bottom of the array - while Flash_CheckRange() still calls the
-     *   range legal, because it only compares against flash_size. That is data
-     *   corruption with a FLASH_OK return.
+     *   이 driver 에는 Extended Address Register(C8h) 경로가 없어서, 3-Byte mode
+     *   에서는 16 MB 를 넘는 주소가 칩에서 조용히 버려지고 배열 아래로 wrap 된다.
+     *   그런데 Flash_CheckRange() 는 flash_size 와만 비교하므로 그 범위를 여전히
+     *   합법이라고 판정한다. 즉 FLASH_OK 를 돌려주면서 data 가 깨진다.
      *
-     *   Refusing the combination costs one compare and turns the worst failure
-     *   mode into a boot-time error the integrator can see. The decision is made
-     *   here (not in the config validator) because the device is only known
-     *   after the JEDEC probe. */
+     *   이 조합을 거절하는 데는 비교 하나가 들고, 최악의 고장 mode 를 통합자가
+     *   볼 수 있는 boot-time error 로 바꾼다. 이 판단을 config validator 가 아니라
+     *   여기서 하는 이유는, 부품을 JEDEC probe 이후에야 알 수 있기 때문이다. */
     if ((g_flash_handle.addr_mode == FLASH_ADDR_3BYTE) && (p_info->addr_bytes == 4U)) {
         g_flash_handle.info  = NULL;   /* leave nothing half-configured behind */
         g_flash_handle.state = FLASH_STATE_ERROR;
@@ -447,12 +480,12 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         return FLASH_ERR_PARAM;
     }
 
-    /* 5. Look up the selected product. The config's model field selects an exact
-     *    variant when needed; otherwise fall back to the expected JEDEC ID. */
+    /* 5. 선택된 제품을 찾는다. config 의 model field 가 필요한 경우 정확한 variant
+     *    를 지정하고, 그렇지 않으면 기대 JEDEC ID 로 넘어간다. */
     const FLASH_INFO *p_info = NULL;
-    /* SW-041: the "model" field is a JEDEC ID now. Settings written by older
-     * firmware hold the old enum (0..7) there; those are not IDs, so they are
-     * treated as "no hint" and the jedec_expect probe below decides. */
+    /* SW-041: "model" field 는 이제 JEDEC ID 다. 예전 firmware 가 쓴 설정에는 그
+     * 자리에 옛 enum(0..7)이 들어 있는데 그것은 ID 가 아니므로 "힌트 없음"으로
+     * 보고, 아래 jedec_expect probe 가 판단하게 한다. */
     if ((cfg.model != (uint32_t)FLASH_MODEL_UNKNOWN) && (cfg.model >= 0x01000000UL)) {
         p_info = Flash_FindDeviceByModel((FLASH_MODEL)cfg.model);
     }
@@ -464,8 +497,8 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         return FLASH_ERR_UNSUPPORTED;
     }
 
-    /* 6. Fail-safe validation: the actual device must match the selection
-     *    (exact or same product family). A wrong / unknown ID is refused. */
+    /* 6. Fail-safe 검증: 실제 부품이 선택과 일치해야 한다(정확히 또는 같은 제품군).
+     *    틀리거나 모르는 ID 는 거절한다. */
     if (!Flash_FamilyMatch(jedec_id, cfg.jedec_expect)) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
@@ -486,16 +519,15 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         return status;
     }
 
-    /* 9. Operation clock from the settings block (SW-021).
+    /* 9. 설정 block 에서 동작 clock 을 정한다(SW-021).
      *
-     *    Everything above ran at the 10 MHz bring-up clock: probing, the basic
-     *    read of this block, QE and 4-byte-mode changes. Only now, with the
-     *    block verified and the handle configured, is it safe to raise the bus.
+     *    위의 모든 단계는 10 MHz bring-up clock 으로 돌았다: probing, 이 block 의
+     *    basic read, QE 와 4-byte-mode 변경까지. 이제 block 검증이 끝나고 handle
+     *    설정도 마쳤으므로 bus 를 올려도 안전하다.
      *
-     *    An out-of-range value is NOT an error: it means the field is absent
-     *    (a 24-byte block written by an older firmware reads back 0xFF there).
-     *    In that case the driver keeps the safe 10 MHz clock instead of failing
-     *    a boot it has no business failing. */
+     *    범위 밖 값은 error 가 아니다: 그 field 가 없다는 뜻이기 때문이다(예전
+     *    24-byte block 은 그 자리가 0xFF 로 읽힌다). 이때 driver 는 실패할 이유가
+     *    없는 부팅을 실패시키지 않고 안전한 10 MHz 를 유지한다. */
     const uint32_t spi_hz = cfg.spi_hz;
     if ((spi_hz >= FLASH_BOOT_SPI_HZ_MIN) && (spi_hz <= FLASH_BOOT_SPI_HZ_MAX)) {
         Flash_SPI_SetSpeed(spi_hz);
@@ -621,20 +653,19 @@ int Flash_ReadStatus(uint8_t reg_idx, uint8_t *p_val)
  ******************************************************************************/
 int Flash_WriteEnable(void)
 {
-    /* WEL (S1) and BUSY (S0) are two bits of the SAME 05h response, so one
-     * status read decides both and nothing extra goes on the wire (SW-020).
+    /* WEL(S1)과 BUSY(S0)는 같은 05h 응답의 두 bit 이므로, status read 한 번으로
+     * 둘을 함께 판단하고 선로에는 아무것도 더 보내지 않는다(SW-020).
      *
-     * Why BUSY has to be part of the test:
-     *   WEL only says "the latch is armed". A WREN that lands while a
-     *   program/erase cycle is still running leaves WEL=1 and WIP=1 set at
-     *   the same time. Returning OK there makes the caller's next program
-     *   command get dropped by the device - and the WaitBusy that follows it
-     *   only proves the PREVIOUS cycle finished, so the failure is silent and
-     *   the caller thinks the page was written.
+     * BUSY 까지 봐야 하는 이유:
+     *   WEL 은 "latch 가 무장되었다"는 것만 말한다. program/erase 주기가 아직
+     *   도는 중에 WREN 이 들어오면 WEL=1 과 WIP=1 이 동시에 선다. 이때 OK 를
+     *   돌려주면 호출자의 다음 program command 는 부품이 버려 버리고, 뒤따르는
+     *   WaitBusy 는 "이전" 주기가 끝났다는 것만 증명하므로, 실패는 조용히 묻히고
+     *   호출자는 page 가 쓰였다고 믿는다.
      *
-     * The retry budget is the same ~1 s as Flash_WaitBusy(): a page program
-     * is 0.4-3 ms, WRSR 15-25 ms, a sector erase 45 ms typical, so a short
-     * 5 x 10 us loop could never absorb a real cycle. */
+     * 재시도 예산은 Flash_WaitBusy() 와 같은 ~1 s 다: page program 은 0.4-3 ms,
+     * WRSR 은 15-25 ms, sector erase 는 보통 45 ms 이므로, 5 x 10 us 짜리 짧은
+     * loop 로는 실제 주기를 절대 흡수할 수 없다. */
     for (uint32_t retry = 0U; retry < 200000U; retry++) {
         Flash_SPI_SendCmd(F_CMD_WREN);
 
@@ -655,14 +686,14 @@ int Flash_WriteEnable(void)
 /******************************************************************************
  * Public API: Flash_WriteEnableVolatile (50h)
  *
- * Datasheet rule (Winbond W25Q / GigaDevice GD25LQ series):
+ * Datasheet rule (Winbond W25Q / GigaDevice GD25LQ 계열):
  *   "The Write Enable for Volatile Status Register command will not set the
  *    Write Enable Latch (WEL) bit, it is only valid for the Write Status
  *    Register command to change the volatile Status Register bit values."
- *   -> 50h arms ONLY the immediately following WRSR; any intervening
- *      command (including a status poll) clears it. Therefore this function
- *      deliberately does NOT poll WEL — it would fail (WEL stays 0) and the
- *      poll itself would consume the volatile enable (SW-013 WEL fix).
+ *   -> 50h 는 바로 뒤따르는 WRSR 만 무장시킨다. 중간에 다른 command(status
+ *      poll 포함)가 끼면 무장이 풀린다. 그래서 이 함수는 일부러 WEL 을
+ *      poll 하지 않는다 — poll 하면 실패하고(WEL 은 0 그대로), 그 poll 자체가
+ *      volatile enable 을 소모한다(SW-013 WEL fix).
  ******************************************************************************/
 int Flash_WriteEnableVolatile(void)
 {
@@ -698,24 +729,22 @@ int Flash_WaitBusy(uint32_t timeout_loops)
 }
 
 /******************************************************************************
- * Status-register write-enable: 06h or 50h (SW-035)
+ * Status-register write-enable: 06h 또는 50h (SW-035)
  *
- * The device keeps TWO copies of the status register: a non-volatile one that
- * survives power-off, and a volatile one that is reloaded from it at every
- * power-up. Both are written with 01h - the only difference is the command
- * that arms the write:
+ * 부품은 status register 를 두 벌로 들고 있다: power-off 에서도 살아남는
+ * non-volatile copy 와, power-up 때마다 그것에서 다시 적재되는 volatile copy.
+ * 둘 다 01h 로 쓰고, 차이는 write 를 무장하는 command 뿐이다:
  *
- *   06h Write Enable           -> arms the NON-VOLATILE copy (endures)
- *   50h Write Enable Volatile  -> arms the VOLATILE copy only
+ *   06h Write Enable           -> NON-VOLATILE copy 무장(영구)
+ *   50h Write Enable Volatile  -> VOLATILE copy 만 무장
  *
- * Which one is correct depends on the CALLER, not on the part:
- *   - Block protect must survive a power cycle, so Flash_Protect() asks for
- *     PERSISTENT (06h). Before SW-035 this path used 50h on the parts that
- *     advertise FLASH_FEAT_VSR_WREN, so the protection was written only into
- *     the volatile copy and silently vanished at the next power-up.
- *   - Quad enable is re-applied on every boot anyway, so it stays VOLATILE
- *     (50h) and spends no non-volatile program cycles on something that is
- *     written again on the next reset.
+ * 어느 쪽이 맞는지는 부품이 아니라 호출자가 정한다:
+ *   - Block protect 는 power cycle 을 견뎌야 하므로 Flash_Protect() 는
+ *     PERSISTENT(06h)를 요청한다. SW-035 이전에는 FLASH_FEAT_VSR_WREN 을
+ *     광고하는 부품에서 이 경로가 50h 를 썼기 때문에, 보호 설정이 volatile
+ *     copy 에만 써지고 다음 power-up 에서 조용히 사라졌다.
+ *   - Quad enable 은 어차피 부팅마다 다시 적용하므로 VOLATILE(50h)로 두어,
+ *     다음 reset 에서 또 쓸 값을 non-volatile program cycle 로 낭비하지 않는다.
  ******************************************************************************/
 typedef enum
 {
@@ -738,37 +767,36 @@ static int Flash_SrWriteEnable(FLASH_SR_WRITE_MODE mode)
 /******************************************************************************
  * Status Register Write (SW-019)
  *
- * Why the GD25LQ64E needs its own path
- * ------------------------------------
- * The part has no 31h (SR2-only) command. 01h is the ONLY way to reach SR2,
- * and it is a FIXED 16-bit command: one SR1 byte, then one SR2 byte.
- * Datasheet 7.4: if CS# is driven high after the 8th data bit the command is
- * still executed, SR1 is written, but QE and CMP are CLEARED to 0 in SPI mode.
- * A "SR1 only" write therefore drops the device out of quad mode silently,
- * while the handle keeps qe_enabled = true and every later quad read returns
- * garbage. So on parts carrying FLASH_FEAT_STATUS_2BYTE_WRITE every status
- * write is issued as a full 16-bit frame: the register that is not being
- * changed is read and echoed untouched, and BOTH bytes are verified after.
+ * GD25LQ64E 에 전용 경로가 필요한 이유
+ * -----------------------------------
+ * 이 부품에는 31h(SR2 전용) command 가 없다. SR2 에 닿는 방법은 01h 뿐이고,
+ * 그것은 고정 16-bit command 다: SR1 byte 하나, 그다음 SR2 byte 하나.
+ * Datasheet 7.4: 8번째 data bit 뒤에 CS# 를 올리면 command 는 그래도 실행되어
+ * SR1 은 써지지만, SPI mode 에서 QE 와 CMP 가 0 으로 CLEAR 된다.
+ * 따라서 "SR1 만 쓰는" write 는 부품을 조용히 quad mode 밖으로 떨어뜨리는데,
+ * handle 은 qe_enabled = true 를 그대로 들고 있어 이후 quad read 가 전부
+ * garbage 를 돌려준다. 그래서 FLASH_FEAT_STATUS_2BYTE_WRITE 를 가진 부품에서는
+ * 모든 status write 를 16-bit frame 전체로 보낸다: 바꾸지 않는 register 는 읽은
+ * 값을 그대로 되돌려 쓰고, 두 byte 모두 write 후 검증한다.
  ******************************************************************************/
 
-/* Bits a WRSR command can actually change.
- * SR1: S7..S2 (SRP0, BP4..BP0). S1 (WEL) and S0 (WIP) are read-only.
- * SR2: S14..S8 except S10. S15 (SUS) and S10 are read-only. */
+/* WRSR 이 실제로 바꿀 수 있는 bit.
+ * SR1: S7..S2 (SRP0, BP4..BP0). S1(WEL)과 S0(WIP)는 read-only.
+ * SR2: S14..S8 중 S10 제외. S15(SUS)와 S10 은 read-only. */
 #define FLASH_SR1_WRITABLE_MASK  (0xFCU)
 #define FLASH_SR2_WRITABLE_MASK  (0x7BU)
 
 /**
- * @brief  Send one 16-bit WRSR (01h + SR1 + SR2) and check both bytes.
- *         Reserved for parts that cannot write SR2 on its own (GD25LQ64E).
+ * @brief  16-bit WRSR(01h + SR1 + SR2) 하나를 보내고 두 byte 를 모두 검사한다.
+ *         SR2 를 단독으로 쓸 수 없는 부품(GD25LQ64E) 전용.
  */
 static int Flash_WriteStatusPair(uint8_t sr1, uint8_t sr2, FLASH_SR_WRITE_MODE mode)
 {
-    /* Idle BEFORE arming (SW-035). This path used to arm straight away while
-     * the general path below waits first. With the persistent arm (06h) a
-     * WREN that arrives during WIP=1 is ignored by the device, WEL never
-     * sets, and the 01h frame is dropped - so the write failed only after a
-     * full busy timeout and a read-back mismatch. One extra 05h poll is much
-     * cheaper than that. */
+    /* 무장 전에 먼저 idle 을 확인한다(SW-035). 이 경로는 예전에 아래 일반 경로와
+     * 달리 곧바로 무장했는데, persistent 무장(06h)에서는 WIP=1 중에 도착한 WREN
+     * 을 부품이 무시해 WEL 이 서지 않고 01h frame 이 버려진다. 그러면 busy timeout
+     * 을 다 기다린 뒤 read-back 불일치로 나서야 실패가 드러난다. 05h poll 한 번이
+     * 훨씬 싸다. */
     int status = Flash_WaitBusy(200000U);
     if (status != FLASH_OK) {
         return status;
@@ -787,8 +815,8 @@ static int Flash_WriteStatusPair(uint8_t sr1, uint8_t sr2, FLASH_SR_WRITE_MODE m
         return status;
     }
 
-    /* Read BOTH bytes back. A truncated frame, a rejected write or a cleared
-     * QE bit is reported here instead of surfacing later as bad data. */
+    /* 두 byte 를 모두 되읽는다. frame 이 잘렸거나 write 가 거절되었거나 QE 가
+     * 지워진 경우가, 나중에 나쁜 data 로 드러나는 대신 여기서 보고된다. */
     uint8_t rb1 = 0U;
     uint8_t rb2 = 0U;
     status = Flash_ReadStatus(1U, &rb1);
@@ -810,12 +838,12 @@ static int Flash_WriteStatusPair(uint8_t sr1, uint8_t sr2, FLASH_SR_WRITE_MODE m
 }
 
 /**
- * @brief  Write one status register, choosing durable or volatile storage.
+ * @brief  status register 하나를 쓴다. durable/volatile 을 골라서 저장한다.
  *
- * @param  reg_idx 1 (SR1), 2 (SR2) or 3 (SR3)
- * @param  val     Value placed in the writable bits; read-only bits ignored
- * @param  mode    FLASH_SR_WRITE_PERSISTENT - survives power-off (block
- *                 protect), FLASH_SR_WRITE_VOLATILE - reloaded at boot (QE)
+ * @param  reg_idx 1 (SR1), 2 (SR2) 또는 3 (SR3)
+ * @param  val     쓸 수 있는 bit 에 넣을 값. read-only bit 는 무시된다
+ * @param  mode    FLASH_SR_WRITE_PERSISTENT - power-off 후에도 유지(block
+ *                 protect), FLASH_SR_WRITE_VOLATILE - 부팅 때 다시 적재(QE)
  */
 static int Flash_WriteStatusEx(uint8_t reg_idx, uint8_t val, FLASH_SR_WRITE_MODE mode)
 {
@@ -841,8 +869,8 @@ static int Flash_WriteStatusEx(uint8_t reg_idx, uint8_t val, FLASH_SR_WRITE_MODE
             return status;
         }
 
-        /* Swap only the byte the caller asked for; the other byte is echoed
-         * exactly as read, which is what keeps QE (and CMP) alive. */
+        /* 호출자가 요청한 byte 만 바꾼다. 나머지 byte 는 읽은 그대로 되돌려 쓰며,
+         * 그것이 QE(와 CMP)를 살려 두는 방법이다. */
         if (reg_idx == 1U) {
             sr1 = val;
         }
@@ -853,9 +881,9 @@ static int Flash_WriteStatusEx(uint8_t reg_idx, uint8_t val, FLASH_SR_WRITE_MODE
     }
 
     /* ---- Standard one-byte status write -------------------------------- */
-    /* Idle first. Two reasons: a WRSR that arrives while WIP=1 is dropped by
-     * the device, and on parts that arm with 50h any intervening command
-     * consumes the volatile enable. */
+    /* 먼저 idle 을 확인한다. 이유는 둘이다: WIP=1 중에 도착한 WRSR 은 부품이
+     * 버리고, 50h 로 무장하는 부품에서는 중간 command 가 volatile enable 을
+     * 소모한다. */
     int status = Flash_WaitBusy(200000U);
     if (status != FLASH_OK) {
         return status;
@@ -888,12 +916,11 @@ static int Flash_WriteStatusEx(uint8_t reg_idx, uint8_t val, FLASH_SR_WRITE_MODE
         return status;
     }
 
-    /* Read back what actually landed (SW-020). Without this a rejected or
-     * truncated WRSR still returned FLASH_OK - the same class of silent
-     * failure the coupled GD path had. Only writable bits are compared:
-     * WEL/WIP on SR1 and SUS/reserved on SR2 are read-only and would make
-     * every write look like a mismatch. reg 3 (11h) has no supported part,
-     * so there is no writable mask for it. */
+    /* 실제로 무엇이 들어갔는지 되읽는다(SW-020). 이 검사가 없으면 거절되거나
+     * 잘린 WRSR 도 FLASH_OK 를 돌려주었다 — GD coupled 경로가 겪은 것과 같은
+     * 종류의 조용한 실패다. 쓸 수 있는 bit 만 비교한다: SR1 의 WEL/WIP 과 SR2 의
+     * SUS/reserved 는 read-only 라서, 비교하면 모든 write 가 불일치로 보인다.
+     * reg 3(11h)은 지원 부품이 없어 writable mask 도 없다. */
     if (reg_idx != 3U) {
         uint8_t rb = 0U;
         status = Flash_ReadStatus(reg_idx, &rb);
@@ -911,12 +938,11 @@ static int Flash_WriteStatusEx(uint8_t reg_idx, uint8_t val, FLASH_SR_WRITE_MODE
 }
 
 /******************************************************************************
- * Public status write (kept for API/tests)
+ * Public status write (API/tests 용으로 유지)
  *
- * Historical behaviour, kept bit-for-bit: the volatile copy is written. Those
- * bits are re-applied at every boot, so persisting them would burn the status
- * register's program budget for nothing. Block protect does NOT use this
- * entry point - it asks for PERSISTENT explicitly (SW-035).
+ * 예전 동작을 그대로 유지한다: volatile copy 에 쓴다. 그 bit 들은 부팅마다 다시
+ * 적용되므로, 영구 저장하면 status register 의 program 예산만 낭비한다. Block
+ * protect 는 이 entry point 를 쓰지 않고 PERSISTENT 를 명시한다(SW-035).
  ******************************************************************************/
 int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 {
@@ -924,16 +950,15 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 }
 
 /******************************************************************************
- * Helper (SW-017): write the 4 block-protect bits of SR1 in one place.
+ * Helper (SW-017): SR1 의 block-protect 4 bit 를 한 곳에서 쓴다.
  *
- *   Protect(bp)   -> write BP3..BP0 = bp
- *   Unprotect()   -> write BP3..BP0 = 0
+ *   Protect(bp)   -> BP3..BP0 = bp 로 write
+ *   Unprotect()   -> BP3..BP0 = 0 으로 write
  *
- * Both are the same operation with a different nibble, so they share one body
- * instead of two near-identical ones (~50 bytes of ROM saved). QE and every
- * other SR1 bit are preserved exactly as read.
+ * 같은 동작에 nibble 만 다르므로, 거의 같은 본문 두 개 대신 하나를 공유한다
+ * (ROM 약 50 byte 절약). QE 와 나머지 SR1 bit 는 읽은 값 그대로 보존한다.
  *
- * Bits used: BP0=bit2, BP1=bit3, BP2=bit4, BP3=bit5 (see flash.h).
+ * 사용 bit: BP0=bit2, BP1=bit3, BP2=bit4, BP3=bit5 (flash.h 참조).
  ******************************************************************************/
 static int Flash_WriteBlockProtect(uint8_t bp_mask)
 {
@@ -951,11 +976,10 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
         return FLASH_ERR_PARAM;
     }
 
-    /* Settle the part BEFORE the snapshot (SW-035). SR1 is read, modified and
-     * written back; if that read lands mid-cycle it carries the transient WIP
-     * bit into the value being written, and the 06h arm that follows is
-     * ignored while WIP=1 - so the protect would time out on its own read-back
-     * even though the device was healthy. */
+    /* snapshot 전에 부품을 먼저 안정시킨다(SW-035). SR1 을 읽어 고쳐 쓰는 사이에
+     * 그 read 가 주기 중간에 걸리면 과도기 WIP bit 가 write 값에 섞여 들어가고,
+     * 뒤따르는 06h 무장은 WIP=1 이라 무시된다. 그러면 부품이 멀쩡한데도 protect
+     * 가 자기 read-back 에서 timeout 된다. */
     status = Flash_WaitBusy(200000U);
     if (status != FLASH_OK) {
         return status;
@@ -966,11 +990,10 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
         return status;
     }
 
-    /* BP0..BP3 live in SR1 bits 2..5. Parts that carry a fifth block-protect
-     * bit (GD25LQ64E: S6 = BP4) additionally take bit 4 of bp_mask.
-     * The mask is only widened when FLASH_FEAT_BP4 is present: on Macronix
-     * parts bit 6 of SR1 is the quad-enable bit and must never be cleared
-     * here. (SW-019) */
+    /* BP0..BP3 은 SR1 의 bit 2..5 에 있다. 다섯 번째 block-protect bit 를 가진
+     * 부품(GD25LQ64E: S6 = BP4)은 bp_mask 의 bit 4 를 추가로 받는다.
+     * mask 는 FLASH_FEAT_BP4 가 있을 때만 넓힌다: Macronix 부품에서 SR1 bit 6 은
+     * quad-enable bit 이므로 여기서 절대 지워서는 안 된다(SW-019). */
     uint8_t bp_field = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
                                  FLASH_SR1_BP2 | FLASH_SR1_BP3);
     uint8_t bp_bits  = (uint8_t)((bp_mask & 0x0FU) << 2);    /* nibble -> bits 2..5 */
@@ -988,10 +1011,9 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
         return FLASH_OK;            /* already in the requested state */
     }
 
-    /* PERSISTENT (SW-035): a block protect that is only written to the
-     * volatile status copy disappears at the next power-up without any error
-     * being reported. Protection is a configuration, so it goes to the
-     * non-volatile copy: 06h instead of 50h. */
+    /* PERSISTENT (SW-035): volatile status copy 에만 써진 block protect 는 다음
+     * power-up 에서 아무 error 없이 사라진다. 보호는 설정이므로 non-volatile
+     * copy 로 보낸다: 50h 대신 06h. */
     return Flash_WriteStatusEx(1U, new_sr1, FLASH_SR_WRITE_PERSISTENT);
 }
 
@@ -1061,47 +1083,14 @@ int Flash_EnableQuad(void)
 }
 
 /******************************************************************************
- * Public API: Flash_SelectDie (W25M512)
- ******************************************************************************/
-int Flash_SelectDie(uint8_t die_idx)
-{
-    const FLASH_INFO *info = g_flash_handle.info;
-    if (info == NULL) {
-        return FLASH_ERR_PARAM;
-    }
-    /* Single die: nothing to select, and the caller may pass any index */
-    if (info->die_count < 2U) {
-        return FLASH_OK;
-    }
-
-    if (die_idx >= info->die_count) {
-        return FLASH_ERR_PARAM;
-    }
-
-    if (g_flash_handle.current_die == die_idx) {
-        return FLASH_OK;
-    }
-
-    /* Winbond Software Die Select (C2h + die_id) — one CS frame */
-    const uint8_t frame[2] = { F_CMD_WINBOND_DIE_SELECT, die_idx };
-    Flash_SpiRawFrame(frame, (uint32_t)sizeof(frame));
-
-    Flash_DelayUs(50U);         /* die-select settle (SW-014: was 500 loops) */
-    g_flash_handle.current_die = die_idx;
-
-    return FLASH_OK;
-}
-
-/******************************************************************************
  * Public API: Flash_GetAddrModeState (SW-042)
  *
- *   Decode the two address-mode bits out of the SR3 value captured during
- *   bring-up. Bits are reported one per argument so the caller never has to
- *   know the register layout; passing NULL for either one is allowed.
+ *   bring-up 중에 잡아 둔 SR3 값에서 address-mode bit 두 개를 해석한다. bit 는
+ *   인자 하나당 하나씩 돌려주므로, 호출자는 register 배치를 몰라도 된다. 둘 중
+ *   하나에 NULL 을 넘겨도 된다.
  *
- *   Returning FLASH_ERR_UNSUPPORTED (instead of 0/0) is deliberate: "this part
- *   has no ADS/ADP" and "this part is in 3-Byte mode" must not look the same to
- *   the caller.
+ *   FLASH_ERR_UNSUPPORTED(0/0 이 아니라)를 돌려주는 것은 의도적이다: "이 부품에는
+ *   ADS/ADP 가 없다"와 "이 부품은 3-Byte mode 다"가 호출자에게 같아 보이면 안 된다.
  ******************************************************************************/
 int Flash_GetAddrModeState(uint8_t *p_ads, uint8_t *p_adp)
 {
@@ -1122,7 +1111,7 @@ int Flash_GetAddrModeState(uint8_t *p_ads, uint8_t *p_adp)
 }
 
 /******************************************************************************
- * Helpers: per-chunk read paths (SW-013 / req 3 functionization)
+ * Helpers: chunk 별 read 경로 (SW-013 / req 3 기능화)
  ******************************************************************************/
 static int Flash_ReadChunkSFC(uint32_t die_addr, uint8_t *p_buf, uint32_t chunk_len,
                               uint32_t effective_unit, FLASH_READ_UNIT unit,
@@ -1158,10 +1147,10 @@ static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chu
         return status;
     }
 
-    /* SW-013 DUMMY (owner-confirmed TCON wire order) is built into the header:
-     * CMD -> ADDR -> DUMMY_LAST (FIRST dummy byte = M7-M0 mode byte slot)
+    /* SW-013 DUMMY(오너 확인 TCON 선로 순서)는 header 안에서 만들어진다:
+     * CMD -> ADDR -> DUMMY_LAST (첫 dummy byte = M7-M0 mode byte slot)
      *      -> DUMMY_VAL -> ... -> DATA
-     * SW-016: header and data travel in ONE frame (tx_len + rx_len). */
+     * SW-016: header 와 data 가 frame 하나로 나간다(tx_len + rx_len). */
     return Flash_SpiReadFrame(Flash_GetCmdRead(read_cfg, g_flash_handle.addr_mode),
                               die_addr,
                               Flash_CmdAddrBytes(g_flash_handle.addr_mode),
@@ -1181,8 +1170,8 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         return status;
     }
 
-    /* Unit resolution + NULL/count checks + overflow guard + Cortex-M0 alignment
-     * now live in one shared helper (SW-016) used by both the SPI and SFC paths. */
+    /* unit 해석 + NULL/count 검사 + overflow 방어 + Cortex-M0 정렬 검사가 모두
+     * 공용 helper(SW-016)로 옮겨졌고, SPI 와 SFC 경로가 함께 쓴다. */
     uint32_t effective_unit = 0U;
     uint32_t total_bytes = 0U;
     status = Flash_XferResolve(unit, count, buf, addr, &effective_unit, &total_bytes);
@@ -1194,10 +1183,10 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         return FLASH_ERR_PARAM;
     }
 
-    /* QPI (4-4-4) is in the mode list but not implemented: the opcode and
-     * address would have to travel on four data lines, which neither the SPI
-     * frame nor the TCON SFC supports. Refuse it by name so a caller gets a
-     * clear error instead of a read performed with the wrong opcode. */
+    /* QPI(4-4-4)는 mode 목록에는 있지만 구현되지 않았다: opcode 와 address 를
+     * data line 네 개로 보내야 하는데, SPI frame 도 TCON SFC 도 그것을 지원하지
+     * 않는다. 이름으로 거절해 두어야 호출자가 틀린 opcode 로 read 를 수행하는
+     * 대신 분명한 error 를 받는다. */
     if (mode == FLASH_READ_QPI) {
         return FLASH_ERR_UNSUPPORTED;
     }
@@ -1207,8 +1196,8 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         return FLASH_ERR_PARAM;
     }
 
-    /* SW-036: an out-of-range offset is not rejected by the chip - it wraps and
-     * reads the wrong sectors without any error. Refuse it here instead. */
+    /* SW-036: 범위를 벗어난 offset 은 칩이 거절하지 않는다 — wrap 되어 엉뚱한
+     * sector 를 아무 error 없이 읽는다. 여기서 거절한다. */
     status = Flash_CheckRange(addr, total_bytes);
     if (status != FLASH_OK) {
         return status;
@@ -1237,11 +1226,6 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
         uint8_t target_die = 0U;
         uint32_t die_addr = 0U;
         status = Flash_CheckDie(current_addr, &target_die, &die_addr);
-        if (status != FLASH_OK) {
-            return status;
-        }
-
-        status = Flash_SelectDie(target_die);
         if (status != FLASH_OK) {
             return status;
         }
@@ -1306,9 +1290,9 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         return FLASH_ERR_PARAM;
     }
 
-    /* SW-036: refuse the write before any bus traffic. A programming command
-     * with an address above the capacity silently lands at the start of the
-     * array (address wrap), which is how a bootloader gets destroyed. */
+    /* 버스 트래픽이 발생하기 전에 쓰기 작업을 막아야 한다. 
+     * 허용 ​​범위를 초과하는 주소를 지정한 프로그래밍 명령은 (주소 래핑 현상에 의해) 배열의 시작 부분에 적용되어 버리는데, 
+     * 이것이 바로 부트로더가 파괴되는 원인이다.*/
     const int range_status = Flash_CheckRange(addr, len);
     if (range_status != FLASH_OK) {
         return range_status;
@@ -1323,11 +1307,6 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         uint8_t target_die = 0U;
         uint32_t die_addr = 0U;
         int status = Flash_CheckDie(current_addr, &target_die, &die_addr);
-        if (status != FLASH_OK) {
-            return status;
-        }
-
-        status = Flash_SelectDie(target_die);
         if (status != FLASH_OK) {
             return status;
         }
@@ -1395,15 +1374,15 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return FLASH_ERR_PARAM;
     }
 
-    /* Full Chip Erase handling.
+    /* Full Chip Erase 처리.
      *
-     * A single-die part is simply "one die" here, so the old duplicated
-     * single-die branch is gone: the loop below covers both cases and saves
-     * ~70 bytes of ROM (SW-017). Flash_SelectDie() is a no-op on a single-die
-     * device, so nothing changes on the wire for those parts. */
+     * 단일 die 부품도 여기서는 "die 하나"이므로, 예전의 중복된 단일-die 분기를
+     * 없앴다: 아래 loop 가 두 경우를 모두 덮고 ROM 이 약 70 byte 줄어든다
+     * (SW-017). Flash_SelectDie() 는 단일 die 부품에서 no-op 이므로 그런 부품의
+     * 선로 동작은 달라지지 않는다. */
     if (mode == FLASH_ERASE_CHIP) {
-        /* The table always sets die_count >= 1; the ternary keeps a malformed
-         * row from turning chip erase into a silent no-op. */
+        /* table 은 언제나 die_count >= 1 을 채운다. ternary 는 망가진 행이 chip
+         * erase 를 조용한 no-op 으로 바꾸지 않게 막는다. */
         const uint8_t dies = (info->die_count != 0U) ? info->die_count : 1U;
 
         for (uint8_t d = 0U; d < dies; d++) {
@@ -1434,9 +1413,9 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return FLASH_OK;
     }
 
-    /* Sector / Block Erase handling.
-     * SW-036: the target must start inside the device. A chip erase ignores
-     * addr and was already handled above, so this only covers sector/block. */
+    /* Sector / Block Erase 처리.
+     * SW-036: 대상이 부품 안에서 시작해야 한다. chip erase 는 addr 를 무시하고
+     * 위에서 이미 처리했으므로, 여기는 sector/block 만 해당한다. */
     int status = Flash_CheckRange(addr, 1U);
     if (status != FLASH_OK) {
         return status;
@@ -1449,16 +1428,10 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return status;
     }
 
-    status = Flash_SelectDie(target_die);
-    if (status != FLASH_OK) {
-        return status;
-    }
-
-    /* SW-037: block-protect is NO LONGER cleared here either.
-     * Erase obeys the same rule as program: the protection the caller set
-     * stays in force, and an erase aimed at a protected sector is refused by
-     * the device (this driver reports FLASH_OK without read-back, so call
-     * Flash_Unprotect() first if that is what you want). */
+    /* SW-037: 여기서도 block-protect 를 더는 해제하지 않는다.
+     * Erase 는 program 과 같은 규칙을 따른다: 호출자가 건 보호는 그대로 유효하고,
+     * 보호된 sector 를 향한 erase 는 부품이 거절한다(이 driver 는 read-back 없이
+     * FLASH_OK 를 보고하므로, 원한다면 먼저 Flash_Unprotect() 를 부를 것). */
 
     const uint8_t erase_cmd = Flash_GetCmdErase(mode, g_flash_handle.addr_mode);
     if (erase_cmd == 0x00U) {
@@ -1475,7 +1448,7 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
         return status;
     }
 
-    /* Opcode + address in one frame (SW-016); the erase itself is BUSY-polled. */
+    /* opcode + address 를 frame 하나로(SW-016). erase 자체는 BUSY 로 poll 한다. */
     status = Flash_SpiWriteFrame(erase_cmd, die_addr,
                                  Flash_CmdAddrBytes(g_flash_handle.addr_mode),
                                  NULL, 0U, false);

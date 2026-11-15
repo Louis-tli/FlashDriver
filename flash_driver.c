@@ -72,11 +72,9 @@ int Flash_WriteBytes(uint32_t addr, const void *data, uint32_t len)
     const FLASH_PROGRAM_MODE mode = ((info->features & FLASH_FEAT_QUAD) != 0U)
                                     ? FLASH_PROGRAM_QUAD : FLASH_PROGRAM_SINGLE;
 
-    /* Flash_Write가 페이지 경계(256B)마다 알아서 나눠 씁니다.
-     * 보호(BP) 해제는 자동이 아닙니다 — SW-037 이후 드라이버는 칩을 스스로
-     * 풀지 않으므로, 보호된 영역에 쓰려면 호출자가 먼저 Flash_Unprotect()를
-     * 한 번 호출해야 합니다. (안 하면 기기는 쓰기를 무시하고 FLASH_OK가
-     * 돌아옵니다 — 이 드라이버는 program 후 read-back을 하지 않습니다.) */
+    /* Flash_Write가 페이지 경계(256B)마다 나누어 쓴다.
+     * Block protect(BP) 해제는 자동이 아니므로, 사용하려면 Unprotect가 선행 되어야 한다.
+     * 안 하면 기기는 쓰기를 무시하고 FLASH_OK가 돌아온다 */
     return Flash_Write(addr, data, len, mode);
 }
 
@@ -135,7 +133,7 @@ uint32_t Flash_SizeBytes(void)
 
 uint32_t Flash_SectorSize(void)
 {
-    /* Same value on every supported part, so it is a constant. Keep returning
-     * 0 before init so the "not initialized" contract stays the same. */
+    /* 지원하는 모든 부품에서 같은 값이므로 상수로 둔다. init 전에는 0 을 돌려주어
+     * "not initialized" 계약을 그대로 유지한다. */
     return (Flash_GetInfo() != NULL) ? FLASH_SECTOR_SIZE : 0U;
 }

@@ -15,7 +15,7 @@ int Flash_XferResolve(FLASH_READ_UNIT unit, uint32_t count,
         return FLASH_ERR_PARAM;
     }
 
-    /* 1. Read-unit mapping (single source of truth for both transfer paths) */
+    /* 1. read-unit 매핑 — SPI·SFC 두 전송 경로가 함께 쓰는 단일 출처 */
     uint32_t unit_bytes;
     switch (unit) {
         case FLASH_READ_UNIT_DEFAULT:
@@ -37,12 +37,12 @@ int Flash_XferResolve(FLASH_READ_UNIT unit, uint32_t count,
         return FLASH_ERR_PARAM;
     }
 
-    /* 3. count * unit must not wrap a 32-bit size */
+    /* 3. count * unit 이 32비트 size 를 넘겨 감싸지 않는지 검사 */
     if (count > (UINT32_MAX / unit_bytes)) {
         return FLASH_ERR_PARAM;
     }
 
-    /* 4. Cortex-M0 hard-fault guard: unaligned access is not recoverable */
+    /* 4. Cortex-M0 hard-fault 방어: 정렬되지 않은 access 는 복구할 수 없다 */
     if (!Flash_IsAligned((uintptr_t)buf, unit_bytes) ||
         !Flash_IsAligned(addr, unit_bytes)) {
         return FLASH_ERR_ALIGNMENT;

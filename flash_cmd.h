@@ -35,11 +35,6 @@ uint8_t Flash_CmdAddrBytes(FLASH_ADDR_MODE mode);
 bool Flash_CmdUse4bOpcode(FLASH_ADDR_MODE mode);
 
 /**
- * @brief  True when the mode requires an Enter-4-Byte (B7h) sequence (Method B).
- */
-bool Flash_CmdNeedsEnter4b(FLASH_ADDR_MODE mode);
-
-/**
  * @brief  Resolve the read opcode for a read config + addressing mode.
  */
 uint8_t Flash_GetCmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode);
