@@ -229,7 +229,7 @@ static FLASH_ADDR_MODE Flash_ResolveAddrMode(uint8_t cfg_mode, const FLASH_INFO 
  *   multi-die stack 은 die 마다 status register 가 따로 있으므로, 이 작업은
  *   die 당 한 번씩 실행해야 한다(SW-013 / G1).
  ******************************************************************************/
-static int Flash_ApplyDieConfig(void)
+static int Flash_SetDieConfig(void)
 {
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
@@ -286,7 +286,7 @@ static int Flash_ApplyProductInit(void)
             if (status != FLASH_OK) {
                 return status;
             }
-            status = Flash_ApplyDieConfig();
+            status = Flash_SetDieConfig();
             if (status != FLASH_OK) {
                 return status;
             }
@@ -294,7 +294,7 @@ static int Flash_ApplyProductInit(void)
         return Flash_SelectDie(0U);
     }
 
-    return Flash_ApplyDieConfig();
+    return Flash_SetDieConfig();
 }
 
 /******************************************************************************
