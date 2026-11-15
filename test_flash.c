@@ -633,7 +633,7 @@ static void Test_MultiDieHandling(void)
     int status = Flash_Init();
     assert(status == FLASH_OK);
     assert(g_flash_handle.info->model_id == FLASH_MODEL_W25M512);
-    assert((g_flash_handle.info->features & FLASH_FEAT_MULTI_DIE) != 0U);
+    assert(g_flash_handle.info->die_count == 2U);   /* SW-044: die_count is the flag */
 
     g_flash_handle.current_die = 0xFFU;
 
@@ -1187,7 +1187,6 @@ static void Test_VendorDensityResolution(void)
     assert(Flash_FindDevice(0xEF4020U)->flash_size == 64UL*1024UL*1024UL); /* byte 0x20 lies */
     assert(Flash_FindDevice(0xEF6119U)->die_count == 2U);
     assert(Flash_FindDevice(0xEF6119U)->die_size == 32UL*1024UL*1024UL);
-    assert((Flash_FindDevice(0xEF6119U)->features & FLASH_FEAT_MULTI_DIE) != 0U);
 
     /* (f) Unknown vendor / nonsense density / unknown model are refused. */
     assert(Flash_FindDevice(0x9D4018U) == NULL);   /* ISSI is not supported */

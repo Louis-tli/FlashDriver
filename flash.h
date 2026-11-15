@@ -238,7 +238,12 @@ typedef enum
 #define FLASH_FEAT_DUAL                 (1U << 0)
 #define FLASH_FEAT_QUAD                 (1U << 1)
 #define FLASH_FEAT_4BYTE_ADDR           (1U << 2)
-#define FLASH_FEAT_MULTI_DIE            (1U << 3)
+/* (bit 3 retired - SW-044) There used to be a FLASH_FEAT_MULTI_DIE flag here.
+ * It was a second copy of a number the table already fills in:
+ * FLASH_INFO.die_count / die_size. Two sources for one fact can drift apart -
+ * a new 2-die part could get die_count = 2 and forget the bit, and the writes
+ * would then cross the die boundary without a clamp. The bit stays unused
+ * instead of renumbering 4..7, which only churns the table. */
 #define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* One 01h frame carries SR1 and SR2
                                                          (GigaDevice GD25LQ family only:
                                                          16 bits mandatory, 8 bits clears

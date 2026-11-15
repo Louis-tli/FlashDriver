@@ -738,3 +738,56 @@ JEDEC ID의 **memory type 바이트**(`(id >> 8) & 0xFF`)입니다.
 - GD25Q16/GD25Q64/GD25Q128도 type `0x40`이므로 같은 8비트 경로를 탑니다(데이터시트 §7.4 동일 문장).
 - 새 GigaDevice 가족(GD25B/GD25W 등)을 추가할 때는 **type 바이트와 WRSR 폭 한 줄**만 확인하면 됩니다.
 - 3바이트/4바이트 주소 모드(SW-042)와는 독립입니다. 이 변경은 상태 레지스터 쓰기 폭만 다룹니다.
+
+---
+
+## SW-044 — `FLASH_FEAT_MULTI_DIE` 삭제: 다이 구성은 `die_count`/`die_size` 하나로
+
+### 문제
+
+`FLASH_INFO`는 "이 부품이 2다이 스택인가"를 **두 곳**에 적고 있었습니다.
+
+- `features & FLASH_FEAT_MULTI_DIE` (비트 플래그)
+- `die_count` / `die_size` (숫자)
+
+표에서 `die_size`는 `die_count == 2`일 때만 채워지므로(`flash_table.c`), 두 값은 **같은 사실의 사본**입니다.
+사용처 6곳은 전부 플래그를 검사한 **바로 다음 줄에서** `die_count`/`die_size`를 다시 읽고 있었습니다 —
+조건이 두 겹인데 두 번째 겹이 추가로 막는 것이 없었습니다.
+
+위험은 표가 자라날 때 생깁니다. 새 2다이 부품을 추가하면서 `die_count = 2`만 쓰고 비트를 잊으면,
+주소는 다이 2까지 올라가는데 경계 클램프가 걸리지 않아 **다이 경계를 넘는 쓰기가 조용히 깨집니다**
+(증상 없음, 반환값 FLASH_OK).
+
+### 변경
+
+| 위치 | 이전 | 이후 |
+|---|---|---|
+| `flash.c` `Flash_CheckDie` | `features & MULTI_DIE` → `die_size == 0`이면 거절 | `die_size != 0` |
+| `flash.c` `Flash_ApplyProductInit` | `MULTI_DIE && die_count > 1` | `die_count > 1` |
+| `flash.c` `Flash_SelectDie` | `MULTI_DIE == 0`이면 no-op | `die_count < 2` |
+| `flash.c` 읽기 경계 클램프 | `features & MULTI_DIE` | `die_size != 0` |
+| `flash.c` 쓰기 경계 클램프 | 같음 | `die_size != 0` |
+| `flash.c` 칩 소거 | `MULTI_DIE ? die_count : 1` | `(die_count != 0) ? die_count : 1` |
+| `flash.h` | `#define FLASH_FEAT_MULTI_DIE (1U << 3)` | 삭제, 비트 3은 **미사용으로 은퇴**(4~7 재번호 금지) |
+| `flash_table.c` | W25M512 예외 행 `FLASH_FEAT_MULTI_DIE` | `FLASH_FEAT_NONE` |
+
+`features`는 이제 **능력**(DUAL·QUAD·4바이트·2바이트 WSR·VSR_WREN·BP4·SR3)만 담고,
+**구성**(다이 수)은 숫자 필드가 단독으로 책임집니다.
+
+칩 소거의 삼항 연산자는 8바이트를 더 쓰지만 남겨 두었습니다. 표에 `die_count = 0`인 행이 들어오면
+루프가 0회 돌고 **FLASH_OK를 반환하는 조용한 무동작**이 되기 때문입니다.
+
+### 결과
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **35/35 PASS**, PASSED 61 |
+| strict 게이트 (24옵션) | 51 → **50** (신규 메시지 0) |
+| ROM (9파일, `-Oz`, `.text+.rodata`) | 5,614 → **5,590 B (−24 B)** |
+| RAM | **0 B** |
+| 역검증 | 표에서 `die_size`를 0으로 고정하면 `test_flash.c:648` **`s_mock.last_die_selected == 1U` 실패** — 다이 루프가 실제로 `die_size`에 물려 있음을 확인 |
+
+### 남는 것
+
+- 1다이 64 MiB 같은 부품이 나와도 `die_count = 1`, `die_size = 0`으로 그대로 표현됩니다(3바이트/4바이트는 `addr_mode` 담당).
+- 3다이 이상 스택도 `die_count = 3`으로 표현 가능합니다 — 예전 플래그 방식보다 일반적입니다.

@@ -104,11 +104,9 @@ static int Flash_CheckDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
         return FLASH_ERR_PARAM;
     }
 
-    if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
-        if (info->die_size == 0U) {
-            return FLASH_ERR_PARAM;
-        }
-
+    /* die_size == 0 means "one die" - the table only fills it in for a stack,
+     * so this is the whole test (SW-044). */
+    if (info->die_size != 0U) {
         /* Which die does this address land on, and where inside that die? */
         const uint8_t target_die = (uint8_t)(addr / info->die_size);
         if (target_die >= info->die_count) {
@@ -230,7 +228,8 @@ static int Flash_ApplyProductInit(void)
         return FLASH_ERR_PARAM;
     }
 
-    if (((info->features & FLASH_FEAT_MULTI_DIE) != 0U) && (info->die_count > 1U)) {
+    /* die_count is 1 on a single-die part, so no separate "is it a stack" bit */
+    if (info->die_count > 1U) {
         for (uint8_t d = 0U; d < info->die_count; d++) {
             int status = Flash_SelectDie(d);
             if (status != FLASH_OK) {
@@ -1055,7 +1054,8 @@ int Flash_SelectDie(uint8_t die_idx)
     if (info == NULL) {
         return FLASH_ERR_PARAM;
     }
-    if ((info->features & FLASH_FEAT_MULTI_DIE) == 0U) {
+    /* Single die: nothing to select, and the caller may pass any index */
+    if (info->die_count < 2U) {
         return FLASH_OK;
     }
 
@@ -1233,7 +1233,7 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
 
         /* Calculate contiguous chunk size within active die */
         uint32_t chunk_len = remaining;
-        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
+        if (info->die_size != 0U) {
             const uint32_t die_remaining = info->die_size - die_addr;
             if (chunk_len > die_remaining) {
                 chunk_len = die_remaining;
@@ -1322,7 +1322,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         uint32_t chunk_len = (remaining > bytes_to_boundary) ? bytes_to_boundary : remaining;
 
         /* Also clamp to die boundary if multi-die */
-        if ((info->features & FLASH_FEAT_MULTI_DIE) != 0U) {
+        if (info->die_size != 0U) {
             const uint32_t die_remaining = info->die_size - die_addr;
             if (chunk_len > die_remaining) {
                 chunk_len = die_remaining;
@@ -1387,8 +1387,9 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
      * ~70 bytes of ROM (SW-017). Flash_SelectDie() is a no-op on a single-die
      * device, so nothing changes on the wire for those parts. */
     if (mode == FLASH_ERASE_CHIP) {
-        const uint8_t dies = ((info->features & FLASH_FEAT_MULTI_DIE) != 0U)
-                             ? info->die_count : 1U;
+        /* The table always sets die_count >= 1; the ternary keeps a malformed
+         * row from turning chip erase into a silent no-op. */
+        const uint8_t dies = (info->die_count != 0U) ? info->die_count : 1U;
 
         for (uint8_t d = 0U; d < dies; d++) {
             int status = Flash_SelectDie(d);

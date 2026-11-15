@@ -183,7 +183,7 @@ static const FLASH_EXCEPTION_CFG s_exception[] =
     { 0xEF4020U, 64UL*FLASH_SIZE_1MB, 1U, 0U },
 
     /* W25M512: SpiStack, density byte 0x19 describes one 32 MB die. */
-    { 0xEF6119U, 64UL*FLASH_SIZE_1MB, 2U, FLASH_FEAT_MULTI_DIE }
+    { 0xEF6119U, 64UL*FLASH_SIZE_1MB, 2U, FLASH_FEAT_NONE }
 };
 
 #define FLASH_EXCEPTION_COUNT   (sizeof(s_exception) / sizeof(s_exception[0]))
