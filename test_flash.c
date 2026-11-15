@@ -17,7 +17,7 @@
 #include "flash_table.h"
 #include "flash_spi.h"
 #include "flash_sfc.h"
-#include "flash_easy.h"
+#include "flash_driver.h"
 
 /******************************************************************************
  * Mock SPI State for Emulation & Testing (per-die status registers)
@@ -427,22 +427,18 @@ void Flash_SPI_Transact(const FLASH_SPI_XFER *xfer)
     s_xfer.last_rx_len   = xfer->rx_len;
     s_xfer.last_first_tx = ((xfer->tx_buf != NULL) && (xfer->tx_len > 0U))
                            ? xfer->tx_buf[0] : 0U;
+
     if (xfer->quad_len > 0U) {
-        s_xfer.last_payload_len = xfer->quad_len;
-        s_xfer.last_payload_tx_len = xfer->tx_len;
-        s_xfer.last_quad_payload_len = xfer->quad_len;
+        s_xfer.last_payload_len         = xfer->quad_len;
+        s_xfer.last_payload_tx_len      = xfer->tx_len;
+        s_xfer.last_quad_payload_len    = xfer->quad_len;
     }
     else if (xfer->data_len > 0U) {
-        s_xfer.last_payload_len = xfer->data_len;
-        s_xfer.last_payload_tx_len = xfer->tx_len;
-        s_xfer.last_data_payload_len = xfer->data_len;
+        s_xfer.last_payload_len         = xfer->data_len;
+        s_xfer.last_payload_tx_len      = xfer->tx_len;
+        s_xfer.last_data_payload_len    = xfer->data_len;
     }
 
-    /* SW-043: remember which status-write frame went out, and on a GigaDevice
-     * 3V part make the second data byte a no-op. The datasheet says such a
-     * command is not executed, so SR2/QE never changes and only the read-back
-     * can notice - modelling it any other way would hide the very failure the
-     * test is about. */
     if ((xfer->tx_buf != NULL) && (xfer->tx_len > 0U) &&
         ((xfer->tx_buf[0] == F_CMD_WRSR1) || (xfer->tx_buf[0] == F_CMD_WRSR2) ||
          (xfer->tx_buf[0] == F_CMD_WRSR3))) {
@@ -688,12 +684,12 @@ static void Test_SFCDMAReadSequence(void)
     printf("  - Default unit (0) resolved to Word (4 bytes) in SFC ACCESS_UNIT.\n");
 
     status = Flash_Read(0x00001000U, aligned_buf, 2048U, FLASH_READ_QUAD_IO,
-                        FLASH_READ_UNIT_HALFWORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+                        FLASH_READ_UNIT_HALF, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
     assert(status == FLASH_OK);
     assert(g_p_sfc_regs->ACCESS_UNIT == 2U);
 
     status = Flash_Read(0x00001001U, aligned_buf, 10U, FLASH_READ_QUAD_IO,
-                        FLASH_READ_UNIT_HALFWORD, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
+                        FLASH_READ_UNIT_HALF, FLASH_READ_OPT_SFC | FLASH_READ_OPT_DMA);
     assert(status == FLASH_ERR_ALIGNMENT);
     printf("  - Halfword unit and 2-byte alignment verified.\n");
 
@@ -708,7 +704,7 @@ static void Test_SFCDMAReadSequence(void)
                         FLASH_READ_UNIT_WORD, 0U);
     assert(status == FLASH_OK);
     status = Flash_Read(0x00001000U, aligned_buf, 128U, FLASH_READ_SINGLE,
-                        FLASH_READ_UNIT_HALFWORD, 0U);
+                        FLASH_READ_UNIT_HALF, 0U);
     assert(status == FLASH_OK);
     status = Flash_Read(0x00001001U, p_unaligned, 256U, FLASH_READ_SINGLE,
                         FLASH_READ_UNIT_BYTE, 0U);
@@ -1249,7 +1245,7 @@ static void Test_EasyApi(void)
 {
     uint8_t buf[256];
 
-    printf("[TEST 21] Easy API: ReadBytes / WriteBytes / EraseRange / EraseChip...\n");
+    printf("[TEST 21] Easy API: ReadBytes / WriteBytes / EraseSector / EraseRange / EraseChip...\n");
 
     Mock_Reset();
     s_mock.mock_jedec_id = 0xEF4019U;                 /* W25Q256JV (quad) */
@@ -1265,6 +1261,8 @@ static void Test_EasyApi(void)
 
     /* Erase a region then program it */
     assert(Flash_EraseRange(0x00002000U, 4096U) == FLASH_OK);   /* 1 sector */
+    assert(Flash_EraseSector(0x00004123U) == FLASH_OK);         /* containing sector */
+    assert(Flash_EraseSector(Flash_SizeBytes()) == FLASH_ERR_PARAM);
     assert(Flash_WriteBytes(0x00002000U, buf, sizeof(buf)) == FLASH_OK);
 
     /* Unaligned address / odd length are fine (auto rounding + byte unit) */

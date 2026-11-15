@@ -89,15 +89,10 @@ typedef enum
     FLASH_READ_QUAD,                    /* 6Bh: Quad Output Read (1-1-4) */
     FLASH_READ_QUAD_IO,                 /* EBh: Quad I/O Read (1-4-4) */
     FLASH_READ_QPI,                     /* 4-4-4 Quad Peripheral Interface.
-                                         * LISTED FOR COMPLETENESS ONLY — this
-                                         * driver and the TCON SFC always send
-                                         * the opcode and address on one data
-                                         * line, so QPI is not implemented.
-                                         * Flash_Read() refuses it with
-                                         * FLASH_ERR_UNSUPPORTED; it is kept in
-                                         * the list so callers can name it and
-                                         * get a clear error instead of a wrong
-                                         * opcode. */
+                                         * 목록에만 있는 모드입니다 — 이 드라이버와 TCON SFC는
+                                         * opcode와 주소를 항상 1선(1-bit)으로 보내므로 QPI는
+                                         * 미지원입니다. Flash_Read()가 FLASH_ERR_UNSUPPORTED로
+                                         * 거절하며, 호출자가 이름으로 지정할 수 있도록 남겨 둡니다. */
     FLASH_READ_MODE_MAX
 } FLASH_READ_MODE;
 
@@ -108,7 +103,7 @@ typedef enum
 {
     FLASH_READ_UNIT_DEFAULT  = 0,   /* Default: 32-bit Word access */
     FLASH_READ_UNIT_BYTE     = 1,   /* 8-bit Byte access */
-    FLASH_READ_UNIT_HALFWORD = 2,   /* 16-bit Halfword access */
+    FLASH_READ_UNIT_HALF     = 2,   /* 16-bit Halfword access */
     FLASH_READ_UNIT_WORD     = 4    /* 32-bit Word access */
 } FLASH_READ_UNIT;
 

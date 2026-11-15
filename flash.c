@@ -97,7 +97,7 @@ static void Flash_SpiRawFrame(const uint8_t *bytes, uint32_t len)
  * Helper: Resolve Multi-Die Address & Die Index (W25M512)
  * (Short delays now use Flash_DelayUs from flash_delay.c — SW-014)
  ******************************************************************************/
-static int Flash_ResolveDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
+static int Flash_CheckDie(uint32_t addr, uint8_t *p_die, uint32_t *p_die_addr)
 {
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
@@ -296,7 +296,7 @@ int Flash_BasicRead(uint32_t addr, void *buf, uint32_t len)
  * The probe/bring-up helpers (Flash_BasicRead, Flash_Reset, status polling)
  * deliberately do NOT use this gate: they must work before the driver is READY.
  ******************************************************************************/
-static int Flash_EnsureReady(void)
+static int Flash_CheckConnect(void)
 {
     /* Plain if-chain on purpose: a switch here made the compiler emit a
      * 12-byte jump table in .rodata, which is silly for four values. */
@@ -924,7 +924,7 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 static int Flash_WriteBlockProtect(uint8_t bp_mask)
 {
     /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
-    const int ready = Flash_EnsureReady();
+    const int ready = Flash_CheckConnect();
     if (ready != FLASH_OK) {
         return ready;
     }
@@ -1147,7 +1147,7 @@ static int Flash_ReadChunkDirect(uint32_t die_addr, uint8_t *p_buf, uint32_t chu
      * CMD -> ADDR -> DUMMY_LAST (FIRST dummy byte = M7-M0 mode byte slot)
      *      -> DUMMY_VAL -> ... -> DATA
      * SW-016: header and data travel in ONE frame (tx_len + rx_len). */
-    return Flash_SpiReadFrame(Flash_CmdRead(read_cfg, g_flash_handle.addr_mode),
+    return Flash_SpiReadFrame(Flash_GetCmdRead(read_cfg, g_flash_handle.addr_mode),
                               die_addr,
                               Flash_CmdAddrBytes(g_flash_handle.addr_mode),
                               read_cfg, p_buf, chunk_len);
@@ -1161,7 +1161,7 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
                uint32_t options)
 {
     /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
-    int status = Flash_EnsureReady();
+    int status = Flash_CheckConnect();
     if (status != FLASH_OK) {
         return status;
     }
@@ -1221,7 +1221,7 @@ int Flash_Read(uint32_t addr, void *buf, uint32_t count,
     while (remaining > 0U) {
         uint8_t target_die = 0U;
         uint32_t die_addr = 0U;
-        status = Flash_ResolveDie(current_addr, &target_die, &die_addr);
+        status = Flash_CheckDie(current_addr, &target_die, &die_addr);
         if (status != FLASH_OK) {
             return status;
         }
@@ -1277,7 +1277,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
                 FLASH_PROGRAM_MODE mode)
 {
     /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
-    const int ready = Flash_EnsureReady();
+    const int ready = Flash_CheckConnect();
     if (ready != FLASH_OK) {
         return ready;
     }
@@ -1299,7 +1299,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         return range_status;
     }
 
-    const uint8_t prog_cmd = Flash_CmdProgram(mode, g_flash_handle.addr_mode);
+    const uint8_t prog_cmd = Flash_GetCmdProgram(mode, g_flash_handle.addr_mode);
     const uint8_t *p_src = (const uint8_t *)buf;
     uint32_t remaining = len;
     uint32_t current_addr = addr;
@@ -1307,7 +1307,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
     while (remaining > 0U) {
         uint8_t target_die = 0U;
         uint32_t die_addr = 0U;
-        int status = Flash_ResolveDie(current_addr, &target_die, &die_addr);
+        int status = Flash_CheckDie(current_addr, &target_die, &die_addr);
         if (status != FLASH_OK) {
             return status;
         }
@@ -1316,21 +1316,6 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         if (status != FLASH_OK) {
             return status;
         }
-
-        /* SW-037: block-protect is NO LONGER cleared here.
-         *
-         * Why: a driver that unlocks the chip by itself silently defeats the
-         * only write protection the product has. A protected region must stay
-         * protected until the caller says otherwise, even if that means the
-         * program is refused by the device.
-         *
-         * The caller now does it explicitly, once, before the first write:
-         *     Flash_Unprotect();
-         *     Flash_Write(...);
-         * CAUTION: this driver does not read back the page after programming,
-         * so a write into a still-protected region returns FLASH_OK while the
-         * device silently ignores it. Callers that must be sure either clear
-         * the protection first (as above) or verify the data themselves. */
 
         /* Bytes left in the current 256-byte page (FLASH_PAGE_SIZE) */
         const uint32_t bytes_to_boundary = FLASH_PAGE_SIZE - (die_addr % FLASH_PAGE_SIZE);
@@ -1385,7 +1370,7 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
 int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
 {
     /* Refuse before touching the bus (SW-018): NO_CONNECT / ERROR / UNINIT */
-    const int ready = Flash_EnsureReady();
+    const int ready = Flash_CheckConnect();
     if (ready != FLASH_OK) {
         return ready;
     }
@@ -1443,7 +1428,7 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
 
     uint8_t target_die = 0U;
     uint32_t die_addr = 0U;
-    status = Flash_ResolveDie(addr, &target_die, &die_addr);
+    status = Flash_CheckDie(addr, &target_die, &die_addr);
     if (status != FLASH_OK) {
         return status;
     }
@@ -1459,7 +1444,7 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
      * the device (this driver reports FLASH_OK without read-back, so call
      * Flash_Unprotect() first if that is what you want). */
 
-    const uint8_t erase_cmd = Flash_CmdErase(mode, g_flash_handle.addr_mode);
+    const uint8_t erase_cmd = Flash_GetCmdErase(mode, g_flash_handle.addr_mode);
     if (erase_cmd == 0x00U) {
         return FLASH_ERR_PARAM;
     }

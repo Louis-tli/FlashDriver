@@ -1,5 +1,5 @@
 /******************************************************************************
- * File Name   : flash_easy.h
+ * File Name   : flash_driver.h
  * Description : Simple "it just works" Flash API for end users (SW-013)
  * Target Core : ARM Cortex-M0 (ARMv6-M)
  * Compiler    : ARMCC (ARM Compiler 5) / ARMCLANG / GCC (C99 Compatible)
@@ -7,7 +7,7 @@
  * This is the RECOMMENDED entry point. It hides every mode / unit / option
  * detail behind automatic choices. A complete example:
  *
- *     #include "flash_easy.h"
+ *     #include "flash_driver.h"
  *
  *     void app_start(void)
  *     {
@@ -26,8 +26,8 @@
  * use the full API in flash.h.
  ******************************************************************************/
 
-#ifndef __FLASH_EASY_H__
-#define __FLASH_EASY_H__
+#ifndef __FLASH_DRV_H__
+#define __FLASH_DRV_H__
 
 #include "flash.h"
 
@@ -56,6 +56,11 @@ int Flash_WriteBytes(uint32_t addr, const void *data, uint32_t len);
 int Flash_EraseRange(uint32_t addr, uint32_t len);
 
 /**
+ * @brief  Erase the 4KB sector containing `addr`.
+ */
+int Flash_EraseSector(uint32_t addr);
+
+/**
  * @brief  Erase the entire chip.
  */
 int Flash_EraseChip(void);
@@ -74,4 +79,4 @@ uint32_t Flash_SectorSize(void);
 }
 #endif
 
-#endif /* __FLASH_EASY_H__ */
+#endif /* __FLASH_DRV_H__ */

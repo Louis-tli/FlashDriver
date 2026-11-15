@@ -55,7 +55,7 @@ void Flash_SFC_SetSingleMode(void)
 void Flash_SFC_SetReadConfig(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
 {
     if ((g_p_sfc_regs != NULL) && (cfg != NULL)) {
-        g_p_sfc_regs->CMD         = (uint32_t)Flash_CmdRead(cfg, mode);
+        g_p_sfc_regs->CMD         = (uint32_t)Flash_GetCmdRead(cfg, mode);
         g_p_sfc_regs->ADDR_SIZE   = (uint32_t)Flash_CmdAddrBytes(mode);
         g_p_sfc_regs->DUMMY_CYCLE = (uint32_t)cfg->dummy_cycles;
         g_p_sfc_regs->DUMMY_BYTE  = (uint32_t)cfg->dummy_bytes;
@@ -150,9 +150,9 @@ int Flash_SFC_DMARead(uint32_t flash_addr, void *dst_buf, uint32_t count,
             }
         }
 
-        current_addr += chunk_len;
-        p_dst += chunk_len;
-        remaining -= chunk_len;
+        current_addr    += chunk_len;
+        p_dst           += chunk_len;
+        remaining       -= chunk_len;
     }
 
     /* Fetch CRC result if requested */

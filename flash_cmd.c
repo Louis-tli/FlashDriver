@@ -30,7 +30,7 @@ bool Flash_CmdNeedsEnter4b(FLASH_ADDR_MODE mode)
 /******************************************************************************
  * Read opcode: chosen by addressing mode (dedicated 4B only for Method A).
  ******************************************************************************/
-uint8_t Flash_CmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
+uint8_t Flash_GetCmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
 {
     if (cfg == NULL) {
         return 0x00U;
@@ -41,7 +41,7 @@ uint8_t Flash_CmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode)
 /******************************************************************************
  * Program opcode: standard 3-Byte / 4-Byte variants.
  ******************************************************************************/
-uint8_t Flash_CmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode)
+uint8_t Flash_GetCmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode)
 {
     const bool is_quad = (prog_mode == FLASH_PROGRAM_QUAD);
 
@@ -92,7 +92,7 @@ uint32_t Flash_CmdBuildHeader(uint8_t *buf, uint8_t cmd, uint32_t addr,
 /******************************************************************************
  * Erase opcode: standard 3-Byte / 4-Byte variants (chip erase has no address).
  ******************************************************************************/
-uint8_t Flash_CmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode)
+uint8_t Flash_GetCmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode)
 {
     const bool use_4b = Flash_CmdUse4bOpcode(addr_mode);
 

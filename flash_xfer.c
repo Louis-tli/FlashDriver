@@ -22,7 +22,7 @@ int Flash_XferResolve(FLASH_READ_UNIT unit, uint32_t count,
         case FLASH_READ_UNIT_WORD:
             unit_bytes = 4U;
             break;
-        case FLASH_READ_UNIT_HALFWORD:
+        case FLASH_READ_UNIT_HALF:
             unit_bytes = 2U;
             break;
         case FLASH_READ_UNIT_BYTE:

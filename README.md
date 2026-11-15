@@ -7,11 +7,11 @@ TCON SoC의 **SFC (Serial Flash Controller) Memory-Mapped DMA** 고속 읽기와
 
 ## 🚀 빠른 시작 — 최대한 단순한 사용법
 
-**최종 사용자는 `flash_easy.h`만 포함하고 아래 함수만 쓰면 됩니다.**
+**최종 사용자는 `flash_driver.h`만 포함하고 아래 함수만 쓰면 됩니다.**
 읽기 모드·단위·옵션·정렬은 모두 자동 처리됩니다.
 
 ```c
-#include "flash_easy.h"
+#include "flash_driver.h"
 
 void app_start(void)
 {
@@ -27,6 +27,7 @@ void app_start(void)
     uint8_t buf[256];
     Flash_ReadBytes(0x1000U, buf, sizeof(buf));     /* 읽기 (주소·길이 제약 없음) */
 
+    Flash_EraseSector(0x2123U);                     /* 주소가 속한 섹터 지우기 */
     Flash_EraseRange(0x2000U, 4096U);               /* 영역 지우기 */
     Flash_WriteBytes(0x2000U, buf, sizeof(buf));    /* 쓰기 (페이지 분할 자동) */
 }
@@ -36,7 +37,8 @@ void app_start(void)
 |------|------|
 | `Flash_BootInit(addr)` | 부팅 1회 초기화 (자동 감지·구성·잠금) |
 | `Flash_ReadBytes(addr, buf, len)` | `len`바이트 읽기 — 임의 주소/길이/정렬 |
-| `Flash_WriteBytes(addr, data, len)` | `len`바이트 쓰기 — 페이지 분할·보호 해제 자동 |
+| `Flash_WriteBytes(addr, data, len)` | `len`바이트 쓰기 — 페이지 분할 자동 (보호 해제는 호출자가 `Flash_Unprotect()`로 명시 — SW-037) |
+| `Flash_EraseSector(addr)` | 주소가 속한 4KB 섹터 지우기 |
 | `Flash_EraseRange(addr, len)` | 구간 내 모든 섹터 지우기 |
 | `Flash_EraseChip()` | 전체 칩 지우기 |
 | `Flash_SizeBytes()` / `Flash_SectorSize()` | 용량·섹터 크기 조회 |
@@ -58,7 +60,7 @@ void app_start(void)
   - 모델명 문자열 제거 + 중복 경로 통합(Boot/Init·Protect/Unprotect·칩 소거)으로 감축. 나눗셈은 가독성을 위해 그대로 사용합니다(프로젝트의 다른 코드가 이미 libgcc 나눗셈기를 링크).
   - 모델 정보는 ROM(`.rodata`) 상주, SRAM은 가벼운 핸들 1개만 사용. 동적 메모리 할당(`malloc`) 완전 배제.
 - **다양한 읽기 단위 지원 (Read Access Units - Byte / Halfword / Word)**:
-  - `FLASH_READ_UNIT_BYTE` (8-bit), `FLASH_READ_UNIT_HALFWORD` (16-bit), `FLASH_READ_UNIT_WORD` (32-bit, 기본값) 지원.
+  - `FLASH_READ_UNIT_BYTE` (8-bit), `FLASH_READ_UNIT_HALF` (16-bit), `FLASH_READ_UNIT_WORD` (32-bit, 기본값) 지원.
   - 기본값(0 지정 시)은 32-bit Word 단위로 자동 해석되어 4바이트 정렬 검사 및 SFC ACCESS_UNIT 설정 수행.
 - **Cortex-M0 (`arm-cm0`) & C99 표준 호환**:
   - 현대적 C99 표준 준수 (`<stdbool.h>`, 지정 초기화자 `Designated Initializers`, 루프 및 로컬 변수 스코프 국소화, `static inline` 헬퍼 함수).
@@ -91,8 +93,8 @@ void app_start(void)
 ## 📁 파일 구성 (File Structure)
 
 ```text
-├── flash_easy.h     # ⭐ 간편 API (최종 사용자용 — ReadBytes/WriteBytes/EraseRange 등)
-├── flash_easy.c     # 간편 API 구현 (모드·단위·옵션 자동 선택)
+├── flash_driver.h     # ⭐ 간편 API (최종 사용자용 — ReadBytes/WriteBytes/EraseRange 등)
+├── flash_driver.c     # 간편 API 구현 (모드·단위·옵션 자동 선택)
 ├── flash_delay.h    # 시간 기반 지연 (Flash_DelayUs — MCU 클록 108/50MHz 대응)
 ├── flash_delay.c    # µs→루프 환산 + 바쁜 대기 구현 (SW-014)
 ├── flash.h          # 공개 드라이버 API, FLASH_READ_UNIT, FLASH_INFO 및 FLASH_HANDLE 정의
@@ -120,7 +122,7 @@ GCC (MinGW / LLVM) 또는 ARM Compiler (ARMCC/ARMCLANG)를 통해 C99 표준으�
 
 ```bash
 # GCC 환경에서 C99 엄격 모드로 컴파일
-gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c flash_delay.c flash_easy.c flash_xfer.c test_flash.c -o test_flash.exe
+gcc -std=c99 -Wall -Wextra -pedantic -I. flash.c flash_table.c flash_spi.c flash_sfc.c flash_cmd.c flash_crc.c flash_delay.c flash_driver.c flash_xfer.c test_flash.c -o test_flash.exe
 
 # 검증 테스트 실행
 ./test_flash.exe
@@ -464,7 +466,7 @@ clang --target=arm-none-eabi -mcpu=cortex-m0 -mthumb \
 ```
 
 > `-Oz`·`-flto`는 동작을 바꾸지 않습니다(31/31 테스트 통과).  
-> 더 줄이려면 기능을 줄이는 선택이 필요합니다: CRC 알고리즘 고정(−170 B) · `flash_easy` 제외(−296 B) · 지원 모델 축소(모델당 −80 B).
+> 더 줄이려면 기능을 줄이는 선택이 필요합니다: CRC 알고리즘 고정(−170 B) · `flash_driver` 제외(−296 B) · 지원 모델 축소(모델당 −80 B).
 
 ### 읽기 모드와 QPI
 

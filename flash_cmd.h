@@ -42,17 +42,17 @@ bool Flash_CmdNeedsEnter4b(FLASH_ADDR_MODE mode);
 /**
  * @brief  Resolve the read opcode for a read config + addressing mode.
  */
-uint8_t Flash_CmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode);
+uint8_t Flash_GetCmdRead(const FLASH_READ_CFG *cfg, FLASH_ADDR_MODE mode);
 
 /**
  * @brief  Resolve the page-program opcode for the given program + addressing mode.
  */
-uint8_t Flash_CmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode);
+uint8_t Flash_GetCmdProgram(FLASH_PROGRAM_MODE prog_mode, FLASH_ADDR_MODE addr_mode);
 
 /**
  * @brief  Resolve the erase opcode for the given erase + addressing mode.
  */
-uint8_t Flash_CmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode);
+uint8_t Flash_GetCmdErase(FLASH_ERASE_MODE erase_mode, FLASH_ADDR_MODE addr_mode);
 
 /**
  * @brief  Build the on-wire command header for a buffered SPI transaction

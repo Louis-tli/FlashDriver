@@ -1,5 +1,5 @@
 /******************************************************************************
- * File Name   : flash_easy.c
+ * File Name   : flash_driver.c
  * Description : Simple "it just works" Flash API (SW-013)
  * Target Core : ARM Cortex-M0 (ARMv6-M)
  * Compiler    : ARMCC (ARM Compiler 5) / ARMCLANG / GCC (C99 Compatible)
@@ -9,12 +9,12 @@
  * about read units, alignment, or option bitmasks.
  ******************************************************************************/
 
-#include "flash_easy.h"
+#include "flash_driver.h"
 
 /******************************************************************************
  * Internal: pick the fastest read mode the active device supports.
  ******************************************************************************/
-static FLASH_READ_MODE Flash_EasyBestReadMode(const FLASH_INFO *info)
+static FLASH_READ_MODE Flash_GetReadMode(const FLASH_INFO *info)
 {
     /* Quad I/O is fastest; fall back through dual to single-width fast read. */
     if ((info->features & FLASH_FEAT_QUAD) != 0U) {
@@ -40,7 +40,7 @@ int Flash_ReadBytes(uint32_t addr, void *buf, uint32_t len)
         return FLASH_OK;
     }
 
-    const FLASH_READ_MODE mode = Flash_EasyBestReadMode(info);
+    const FLASH_READ_MODE mode = Flash_GetReadMode(info);
 
     /* Dual / Quad reads must go through the SFC data path. */
     uint32_t opt = FLASH_READ_OPT_NONE;
@@ -72,7 +72,11 @@ int Flash_WriteBytes(uint32_t addr, const void *data, uint32_t len)
     const FLASH_PROGRAM_MODE mode = ((info->features & FLASH_FEAT_QUAD) != 0U)
                                     ? FLASH_PROGRAM_QUAD : FLASH_PROGRAM_SINGLE;
 
-    /* Flash_Write already splits at page boundaries and clears write-protect. */
+    /* Flash_Write가 페이지 경계(256B)마다 알아서 나눠 씁니다.
+     * 보호(BP) 해제는 자동이 아닙니다 — SW-037 이후 드라이버는 칩을 스스로
+     * 풀지 않으므로, 보호된 영역에 쓰려면 호출자가 먼저 Flash_Unprotect()를
+     * 한 번 호출해야 합니다. (안 하면 기기는 쓰기를 무시하고 FLASH_OK가
+     * 돌아옵니다 — 이 드라이버는 program 후 read-back을 하지 않습니다.) */
     return Flash_Write(addr, data, len, mode);
 }
 
@@ -100,6 +104,22 @@ int Flash_EraseRange(uint32_t addr, uint32_t len)
         }
     }
     return FLASH_OK;
+}
+
+int Flash_EraseSector(uint32_t addr)
+{
+    const FLASH_INFO *info = Flash_GetInfo();
+    uint32_t sector_addr = 0U;
+
+    /* 용량 밖 주소는 버스 트래픽 없이 거절 (SW-036 규칙과 동일) */
+    if ((info == NULL) || (addr >= info->flash_size)) {
+        return FLASH_ERR_PARAM;
+    }
+
+    /* 섹터 경계로 내림: 같은 섹터 안의 어떤 주소를 주어도 그 섹터를 지운다.
+     * FLASH_SECTOR_SIZE는 2의 거듭제곱이라 나눗셈이 AND로 바뀐다. */
+    sector_addr = addr - (addr % FLASH_SECTOR_SIZE);
+    return Flash_Erase(sector_addr, FLASH_ERASE_SECTOR);
 }
 
 int Flash_EraseChip(void)
