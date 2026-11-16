@@ -499,9 +499,15 @@ int Flash_Unprotect(void);
 /**
  * @brief  mask 로 active die 의 block-protect(BP) bit 를 세워 메모리 영역을
  *         보호한다. QE 와 나머지 bit 는 보존한다. (SW-013 / G2)
- *         bits 3..0 = BP3..BP0. bit 4 = BP4 (FLASH_FEAT_BP4 를 가진 부품만,
- *         예: GD25LQ64E). 그 외 부품에서는 무시되므로, 같은 자리에 있는
- *         Macronix 의 quad-enable bit 를 건드릴 수 없다.
+ *         bits 3..0 = BP3..BP0, bit 4 = BP4 (FLASH_FEAT_BP4 를 가진 부품만, 예:
+ *         GD25LQ64E).
+ *         SW-046: BP3 가 없는 부품에서는 mask bit3 이상을 넘기면
+ *         FLASH_ERR_PARAM 을 돌려준다. Winbond W25Q 는 128 Mbit 이하에서 SR1
+ *         bit5 가 BP3 가 아니라 TB(top/bottom) 이므로(W25Q32JV §7.1,
+ *         W25Q256JV §7.1.4), 그 mask 를 그대로 쓰면 보호가 걸리지 않았는데도
+ *         OK 가 나오거나 보호 방향이 뒤집힌다. bit4 는 FLASH_FEAT_BP4 부품에서만
+ *         유효하다 — Macronix 의 같은 자리는 quad-enable bit 이므로 건드리지
+ *         않는다.
  */
 int Flash_Protect(uint8_t bp_mask);
 

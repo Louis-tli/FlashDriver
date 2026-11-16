@@ -848,3 +848,60 @@ CRC로는 잡을 수 없습니다. 바이트는 **정상 도착**했고, 다만 
   칩에 4바이트 모드를 **기억시킵니다**(휘발성, 전원 차단 시 소멸). 드라이버에는 `E9h`(Exit 4B) 호출이
   없으므로, B로 부팅한 뒤 전원을 끊지 않고 다른 코드에 버스를 넘기면 그 코드는 3바이트로 읽어
   주소가 밀립니다. 기본값이 A인 이유입니다.
+
+## SW-046 — block-protect bit 폭은 부품마다 다르다 (2026-11-16)
+
+### 문제
+
+`Flash_Protect(bp_mask)`는 mask의 하위 4비트를 **항상** SR1 bit 2..5에 썼습니다
+(`flash.c` `Flash_WriteBlockProtect`). 그런데 Winbond W25Q는 용량에 따라 SR1 배치가
+바뀝니다.
+
+| 부품 | SR1 배치 | BP 폭 |
+|---|---|---|
+| W25Q16/32/64/128 (≤128 Mbit) | `SRP SEC TB BP2 BP1 BP0 WEL BUSY` | **3 bit** (S4/S3/S2) |
+| W25Q256/512 (≥256 Mbit) | `SRP TB BP3 BP2 BP1 BP0 WEL BUSY` | **4 bit** (S5/S4/S3/S2) |
+
+근거: W25Q32JV Rev K §7.1 "The Block Protect Bits (BP2, BP1, BP0) are ... in the status
+register (S4, S3, and S2)", W25Q256JV §7.1.4 "The Block Protect Bits (BP3, BP2, BP1, BP0) ...".
+
+즉 128 Mbit 이하 부품에서 **bit5는 BP3가 아니라 TB(top/bottom)** 입니다. 그래서 예전 코드는:
+
+- `Protect(0x08)` → BP=000, **TB=1** → 아무것도 보호되지 않는데 `FLASH_OK` (조용한 무보호)
+- `Protect(0x0C)` → BP=100 + TB=1 → 보호 방향이 top에서 bottom으로 뒤집힘
+- `Protect(0x0F)` → 전체 보호는 되지만 TB가 영구 오염 (write는 PERSISTENT 06h, SW-035)
+- `Unprotect()` → bits 2..5를 0으로 → 요청하지 않은 TB까지 지움
+
+테스트가 `0xEF4019`(W25Q256JV, 4 bit)만 썼기 때문에 드러나지 않았습니다.
+
+### 변경
+
+| 위치 | 내용 |
+|---|---|
+| `flash.c` `Flash_HasBp3()` | `manufacture_id == 0xEF && flash_size <= 16 MB` 이면 BP3 없음 |
+| `flash.c` `Flash_WriteBlockProtect` | `bp_field`/`bp_allow`를 부품 폭에 맞춰 계산, 범위 밖 mask는 `FLASH_ERR_PARAM` |
+| `flash.h` `Flash_Protect` | mask 의미와 거절 조건 문서화 |
+| `test_flash.c` TEST 13 | `0xEF4018`(W25Q128JV)로 3-bit 경로 3케이스 추가 |
+
+`bp_allow`는 부품이 실제로 받아 주는 mask 범위입니다: 3-bit = `0x07`, 4-bit = `0x0F`,
+`FLASH_FEAT_BP4` 부품 = `0x1F`. 범위를 넘는 요청은 **조용히 무시하지 않고 거절**합니다 —
+"보호했다고 믿는데 아무것도 안 걸린" 상태가 가장 위험하기 때문입니다.
+
+### 결과
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **35/35 PASS**, PASSED 62 → **63** |
+| 빌드 경고 | **0** |
+| strict 게이트 (24옵션) | 51 → **51** (신규 메시지 0) |
+| ROM (9파일, `-Oz`, `.text+.rodata`) | 5,558 → **5,594 B (+36 B)** |
+| RAM | **0 B** |
+| 역검증 | 가드를 지우면 `test_flash.c:958` **`status == FLASH_ERR_PARAM` 실패** — 3-bit 부품이 조용히 통과했음을 확인 |
+
+### 남는 것
+
+- GD25Q32E/LQ64E는 BP4(S6)까지 있어 4-bit 경로 그대로입니다(`FLASH_FEAT_BP4`).
+- Macronix MX25L은 3-bit/4-bit 부품이 섞여 있어 **별도 확인이 필요**합니다. 현재는 4-bit로
+  가정하며, 3-bit 부품이 확인되면 같은 방식으로 판정을 추가하면 됩니다.
+- `Flash_Protect`가 거절한 뒤에도 호출자가 mask를 낮춰 재시도할 수 있도록, 반환값을 반드시
+  확인해야 합니다(기존 계약과 동일).

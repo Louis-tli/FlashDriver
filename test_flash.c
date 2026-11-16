@@ -944,7 +944,33 @@ static void Test_ProtectUnprotect(void)
     status = Flash_Unprotect();
     assert(status == FLASH_OK);
     assert((s_mock.sr1[0] & 0x3CU) == 0x00U);          /* BP cleared */
-    printf("  - Protect sets BP bits, Unprotect clears them. PASSED.\n\n");
+
+    /* SW-046: Winbond 128 Mbit 이하(W25Q128JV, 0xEF4018)는 BP2..BP0 만 있고
+     * SR1 bit5 는 TB 다. 4-bit mask 를 그대로 쓰면 BP3 대신 TB 를 뒤집어
+     * "보호했다고 믿는데 아무것도 안 걸린" 상태가 된다. */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0xEF4018U;
+    Mock_SetStatus(0x00U, 0x02U, 0x00U);
+    status = Flash_Init();
+    assert(status == FLASH_OK);
+
+    status = Flash_Protect(0x08U);                      /* BP3 요청 = 이 부품엔 없음 */
+    assert(status == FLASH_ERR_PARAM);
+    assert(s_mock.sr1[0] == 0x00U);                     /* BP 도 TB 도 그대로 */
+
+    status = Flash_Protect(0x07U);                      /* BP2..BP0 */
+    assert(status == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x1CU) == 0x1CU);
+    assert((s_mock.sr1[0] & 0x20U) == 0x00U);           /* TB 는 건드리지 않는다 */
+
+    /* TB=1 로 이미 설정된 부품: Unprotect 는 BP 만 지우고 TB 는 남긴다. */
+    Mock_SetStatus(0x20U, 0x02U, 0x00U);
+    status = Flash_Unprotect();
+    assert(status == FLASH_OK);
+    assert((s_mock.sr1[0] & 0x1CU) == 0x00U);
+    assert((s_mock.sr1[0] & 0x20U) == 0x20U);           /* TB 보존 */
+    printf("  - Protect sets BP bits, Unprotect clears them. PASSED.\n");
+    printf("  - SW-046: 3-bit BP part refuses BP3 mask, keeps TB. PASSED.\n\n");
 }
 
 /* SW-037: driver 는 더는 칩을 스스로 unlock 하지 않는다.

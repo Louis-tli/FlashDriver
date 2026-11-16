@@ -950,6 +950,26 @@ int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 }
 
 /******************************************************************************
+ * Helper (SW-046): 이 부품이 BP3 를 가지고 있는지 판정한다.
+ *
+ * Winbond W25Q 는 128 Mbit 이하에서 SR1 이 SRP|SEC|TB|BP2|BP1|BP0|WEL|BUSY 이고
+ * (W25Q32JV Rev K §7.1: "The Block Protect Bits (BP2, BP1, BP0) ... (S4, S3, and
+ * S2)"), 256 Mbit 부터 SR1 이 SRP|TB|BP3|BP2|BP1|BP0|WEL|BUSY 로 바뀐다
+ * (W25Q256JV §7.1.4). 즉 작은 부품의 bit5 는 BP3 가 아니라 TB(top/bottom) 다.
+ * 다른 vendor 는 이 경계를 쓰지 않으므로 그대로 4 bit 로 본다.
+ ******************************************************************************/
+#define FLASH_WINBOND_BP2_MAX_SIZE  (16UL * 1024UL * 1024UL)
+
+static bool Flash_HasBp3(const FLASH_INFO *info)
+{
+    if ((((info->jedec_id >> 16) & 0xFFU) == 0xEFU) &&
+        (info->flash_size <= FLASH_WINBOND_BP2_MAX_SIZE)) {
+        return false;               /* BP2..BP0 만 있고, bit5 는 TB */
+    }
+    return true;
+}
+
+/******************************************************************************
  * Helper (SW-017): SR1 의 block-protect 4 bit 를 한 곳에서 쓴다.
  *
  *   Protect(bp)   -> BP3..BP0 = bp 로 write
@@ -990,19 +1010,35 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
         return status;
     }
 
-    /* BP0..BP3 은 SR1 의 bit 2..5 에 있다. 다섯 번째 block-protect bit 를 가진
+    /* BP0..BP2 은 SR1 의 bit 2..4 에 있다. BP3(bit5)은 부품마다 있고 없고가
+     * 갈리며, 없는 부품에서는 그 자리가 TB 다(SW-046). 다섯 번째 bit 를 가진
      * 부품(GD25LQ64E: S6 = BP4)은 bp_mask 의 bit 4 를 추가로 받는다.
      * mask 는 FLASH_FEAT_BP4 가 있을 때만 넓힌다: Macronix 부품에서 SR1 bit 6 은
      * quad-enable bit 이므로 여기서 절대 지워서는 안 된다(SW-019). */
-    uint8_t bp_field = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 |
-                                 FLASH_SR1_BP2 | FLASH_SR1_BP3);
-    uint8_t bp_bits  = (uint8_t)((bp_mask & 0x0FU) << 2);    /* nibble -> bits 2..5 */
+    uint8_t bp_field = (uint8_t)(FLASH_SR1_BP0 | FLASH_SR1_BP1 | FLASH_SR1_BP2);
+    uint8_t bp_allow = 0x07U;                    /* 이 부품이 받아 주는 mask 범위 */
+
+    if (Flash_HasBp3(info)) {
+        bp_field = (uint8_t)(bp_field | FLASH_SR1_BP3);
+        bp_allow = 0x0FU;
+    }
 
     if ((info->features & FLASH_FEAT_BP4) != 0U) {
         bp_field = (uint8_t)(bp_field | FLASH_SR1_BP4);
-        if ((bp_mask & 0x10U) != 0U) {
-            bp_bits = (uint8_t)(bp_bits | FLASH_SR1_BP4);    /* mask bit4 -> BP4 */
-        }
+        bp_allow = 0x1FU;
+    }
+
+    /* 부품에 없는 BP bit 를 요청하면 거절한다(SW-046). 예전 code 는 3-bit 부품에
+     * 0x08 을 넘기면 BP3 자리(=TB)를 세워, 아무것도 보호하지 않고 FLASH_OK 를
+     * 돌려주었다. 조용한 무보호보다 눈에 보이는 error 가 낫다. */
+    if ((bp_mask & (uint8_t)(~bp_allow)) != 0U) {
+        return FLASH_ERR_PARAM;
+    }
+
+    uint8_t bp_bits = (uint8_t)((bp_mask & 0x0FU) << 2);    /* nibble -> bits 2..5 */
+
+    if ((bp_mask & 0x10U) != 0U) {
+        bp_bits = (uint8_t)(bp_bits | FLASH_SR1_BP4);       /* mask bit4 -> BP4 */
     }
 
     const uint8_t new_sr1  = (uint8_t)((sr1 & (uint8_t)(~bp_field)) | (bp_bits & bp_field));
