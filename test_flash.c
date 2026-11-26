@@ -519,6 +519,43 @@ static void Test_TableLookup(void)
 
     assert(Flash_FindDevice(0x123456U) == NULL);
 
+    /* SW-047: 1.8V 부품 5종. Macronix MX25U 는 density byte 상위 3 bit(0x20)를
+     * 계열 표시로 쓰므로(0x35 = 2^21) table 행 없이도 해석되어야 하고,
+     * GD25LF128E 는 0x18 이라 예전 규칙 그대로 16 MB 로 풀린다.
+     * 기대값: 용량 / 3-byte address / QE 위치(SR1 b6 vs SR2 b1) / BP4 유무. */
+    {
+        static const struct {
+            uint32_t id; uint32_t size; uint8_t qe_reg; uint8_t qe_bit;
+            bool bp4; const char *name;
+        } v18[] = {
+            { 0xC22535U,  2UL*1024UL*1024UL, 1U, 6U, false, "MX25U1632F"  },
+            { 0xC22536U,  4UL*1024UL*1024UL, 1U, 6U, false, "MX25U3232F"  },
+            { 0xC22537U,  8UL*1024UL*1024UL, 1U, 6U, false, "MX25U6432F"  },
+            { 0xC22538U, 16UL*1024UL*1024UL, 1U, 6U, false, "MX25U12832F" },
+            { 0xC86318U, 16UL*1024UL*1024UL, 2U, 1U, true,  "GD25LF128E"  }
+        };
+        for (uint32_t i = 0U; i < (uint32_t)(sizeof(v18) / sizeof(v18[0])); i++) {
+            const FLASH_INFO *p = Flash_FindDevice(v18[i].id);
+            assert(p != NULL);
+            assert(p->jedec_id == v18[i].id);
+            assert(p->flash_size == v18[i].size);
+            assert(p->addr_bytes == 3U);                    /* 전부 16 MB 이하 */
+            assert((p->features & FLASH_FEAT_QUAD) != 0U);
+            assert(p->qe_reg == v18[i].qe_reg);
+            assert(p->qe_bit == v18[i].qe_bit);
+            /* BP4 는 SR1 bit6 이 BP4 인 부품에만 있어야 한다 — Macronix 는
+             * 같은 bit6 이 QE 라서 절대 켜지면 안 된다. */
+            assert(((p->features & FLASH_FEAT_BP4) != 0U) == v18[i].bp4);
+            printf("  - %-11s JEDEC 0x%06X | Size: %6u KB | Addr: %uB | QE: SR%u b%u%s\n",
+                   v18[i].name, p->jedec_id, (unsigned)(p->flash_size / 1024U),
+                   p->addr_bytes, p->qe_reg, p->qe_bit,
+                   v18[i].bp4 ? " | BP4" : "");
+        }
+        /* 상위 3 bit 가 0x20 이 아닌 값은 계속 거절되어야 한다 — mask 가
+         * 지나치게 넓어지지 않았는지 확인하는 negative case. */
+        assert(Flash_FindDevice(0xC22540U) == NULL);
+    }
+
     /* SW-041: 이제 훑을 flat table 이 없다. 예전에 행이던 ID 들을 쓸어 보며,
      * vendor + density resolver 가 그것들을 어떻게 해석하는지 출력한다. */
     static const struct { uint32_t id; const char *name; } known[] = {

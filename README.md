@@ -905,3 +905,77 @@ register (S4, S3, and S2)", W25Q256JV §7.1.4 "The Block Protect Bits (BP3, BP2,
   가정하며, 3-bit 부품이 확인되면 같은 방식으로 판정을 추가하면 됩니다.
 - `Flash_Protect`가 거절한 뒤에도 호출자가 mask를 낮춰 재시도할 수 있도록, 반환값을 반드시
   확인해야 합니다(기존 계약과 동일).
+
+---
+
+## SW-047 — 1.8V 부품 5종 편입: Macronix는 density byte에 계열 표시를 얹습니다 (2026-11-25)
+
+### 문제
+
+요청받은 1.8V 부품은 다섯 개였고, 그중 **네 개가 표(table)에 없어서** 부팅 단계에서
+`FLASH_ERR_UNSUPPORTED`로 떨어졌습니다.
+
+| 부품 | RDID (9Fh) | 용량 | 예전 결과 |
+|---|---|---|---|
+| MX25U1632F | `C2 25 35` | 2 MB (16 Mb) | ❌ 거절 |
+| MX25U3232F | `C2 25 36` | 4 MB (32 Mb) | ❌ 거절 |
+| MX25U6432F | `C2 25 37` | 8 MB (64 Mb) | ❌ 거절 |
+| MX25U12832F | `C2 25 38` | 16 MB (128 Mb) | ❌ 거절 |
+| GD25LF128E | `C8 63 18` | 16 MB (128 Mb) | ✅ 통과 (0x18 = 2^24) |
+
+이유는 density byte 해석입니다. 우리 resolver는 `size = 1 << density`로 계산하는데,
+Macronix 1.8V 계열은 **density byte의 상위 3 bit를 계열 표시로 씁니다**. 0x35는 2^53이
+아니라 "0x30 + log2(byte)" = 0x30 + 21 = **2^21 = 2 MB**라는 뜻입니다. 53 > 31이라
+resolver가 `NULL`을 돌려주고, `flash.c`가 그대로 unsupported로 처리했습니다.
+
+### 근거 (원문)
+
+- MX25U1632F Rev 1.2 (2024-05-09) 9-4 RDID / Table 6: `C2 25 35`.
+- 같은 문서 Table 7 Status Register: `SRWD | QE | BP3 | BP2 | BP1 | BP0 | WEL | WIP`
+  → QE는 SR1 **bit6**, BP는 **4 bit**(bit5..bit2), **BP4는 없음**.
+- 같은 문서 §6: T/B는 상태 레지스터가 아니라 **Configuration Register bit3**입니다
+  (MX25U1632F는 T/B를 CR로 옮긴 세대). 그래서 우리 `Protect()`가 SR1 bit2..5만
+  건드리는 현재 방식이 이 부품에서는 정확합니다.
+- 같은 문서 Table 5 / §9-16: 4READ(`EBh`)의 기본 dummy는 **6 cycle**, 2READ(`BBh`)는 4 cycle.
+  우리 `s_readcmd_nm6` 프로파일과 일치합니다.
+- GD25LF128E Rev 1.3: `C8 63 18`, SR1 = `SRP0 | BP4 | BP3 | BP2 | BP1 | BP0 | WEL | WIP`,
+  SR2 = `SUS1 | CMP | LB3 | LB2 | (QE=1 고정)`, **QE는 항상 1이라 쓸 필요 없음**,
+  EBh 기본 dummy 6 cycle.
+
+### 변경
+
+| 위치 | 내용 |
+|---|---|
+| `flash_table.c` `Flash_FindDevice()` | Macronix(`0xC2`)이고 density의 상위 3 bit가 `0x20`이면 `density &= 0x1F` |
+| `test_flash.c` TEST 1 | 5종의 용량 / 3-byte / QE 위치 / BP4 유무를 개별 assert + negative case `0xC22540` |
+
+핵심은 **예외 행 4개를 늘리지 않았다**는 점입니다. 0x30+n 규칙은 MX25U3232F·6432F·
+12832F는 물론 앞으로 나올 같은 계열 용량까지 한 줄로 덮습니다. 반대로 3V MX25L
+계열(0x15, 0x18 …)은 상위 bit가 0이라 이 mask에 걸리지 않습니다.
+
+mask 범위를 `0x20`으로 좁힌 이유는, `0xE0`까지만 넓히면 정체불명의 byte까지 5 bit로
+잘라 "그럴듯한 거짓 용량"을 만들 수 있기 때문입니다. 상위 3 bit가 정확히 `001`일 때만
+계열 표시로 인정합니다.
+
+### 결과
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **35/35 PASS**, PASSED 63, FAILED 0 |
+| 빌드 경고 | **0** (`-Wall -Wextra -pedantic`) |
+| strict 게이트 (24옵션, `flash_table.c`) | **0 warning** |
+| ROM (`flash_table.o`, `-Oz`, Cortex-M0) | 292 → **320 B (+28 B)** — 5,594 → **5,622 B** |
+| RAM | **0 B** (정적 테이블 변화 없음) |
+| 신규 지원 | MX25U1632F / 3232F / 6432F / 12832F / GD25LF128E — 5종 |
+
+### 남는 것
+
+- **GD25LF128E의 `BBh`(dual I/O) dummy cycle 수는 원문 표에서 확인하지 못했습니다.**
+  `EBh`는 6 cycle로 확인했고 GD 행의 quad 프로파일과 일치합니다. dual 모드는
+  `Flash_SetReadMode(FLASH_READ_DUAL_IO)`로 명시 선택할 때만 쓰이므로 기본 경로에는
+  영향이 없습니다. 실사용에서 dual을 쓸 계획이면 type byte `0x63` 전용 프로파일
+  (dummy 4)을 추가하는 편이 안전합니다.
+- MX25U는 1.8V 부품이라 **tPWD 100 µs**(VCC 안정 후 추가 대기)가 데이터시트에 있습니다.
+  부팅 지연 A안(tPUW 5 ms)을 넣으면 함께 덮입니다 — 아직 미승인 상태입니다.
+- MX25U 계열의 BP 폭은 이번 문서로 **4 bit / BP4 없음**이 확인되었습니다. SW-046의
+  "Macronix 3-bit/4-bit 혼재" 항목 중 1.8V 계열은 이제 확정입니다(3V MX25L은 미확인 유지).

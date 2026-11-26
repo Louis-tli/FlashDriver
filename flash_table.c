@@ -244,6 +244,18 @@ const FLASH_INFO *Flash_FindDevice(uint32_t jedec_id)
         /* Tier 2: density byte 는 log2(bytes) 다. 0 은 "해당 없음"이고, 32 이상은
          * 32비트 size 로 shift 할 수 없으므로 언제나 예외 행이 필요하다. */
         density = (uint8_t)(jedec_id & 0xFFU);
+
+        /* Macronix 는 density byte 의 상위 3 bit 를 "계열 표시"로 쓴다. 1.8V
+         * MX25U1632F 는 RDID 로 C2 25 35 를 답하는데(MX25U1632F Rev 1.2 표 6),
+         * 0x35 는 2^53 이 아니라 "2^21 byte = 16 Mb" 라는 뜻이다 — 즉 0x30 +
+         * log2(byte). 같은 방식이 MX25U3232F(0x36) / 6432F(0x37) /
+         * 12832F(0x38) 에 그대로 이어지고, 3V MX25L 계열(0x15, 0x18 …)은
+         * 상위 bit 가 0 이라 이 mask 에 걸리지 않는다.
+         * 그래서 예외 행 4개 대신 이 한 줄이 MX25U 4종을 전부 해석한다. */
+        if (((jedec_id >> 16) == 0xC2U) && ((density & 0xE0U) == 0x20U)) {
+            density &= 0x1FU;
+        }
+
         if ((density == 0U) || (density > 31U)) {
             return NULL;
         }
