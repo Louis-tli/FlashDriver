@@ -138,6 +138,8 @@ static void Mock_Reset(void)
     g_flash_handle.last_crc      = 0U;
     g_flash_handle.sr3           = 0U;
     g_flash_handle.sr3_valid     = false;
+    /* SW-048: 옵트인은 init 때만 정해지므로 test 사이에 반드시 초기화한다. */
+    g_flash_handle.generic_write = false;
 }
 
 /* Set the status registers for both dies (keeps old single-value call sites simple). */
@@ -1864,12 +1866,15 @@ static void Test_GigaDeviceDensities(void)
     assert(Flash_GetInfo()->flash_size == 16UL * 1024UL * 1024UL);
     assert(Flash_GetInfo()->addr_bytes == 3U);    /* exactly 16 MB is still 3-byte */
 
-    /* 6) an unknown VENDOR is still refused - that is the real limit now. */
+    /* 6) an unknown VENDOR now falls back to the tier-2 generic profile
+     *    (SW-048): still initialised, but read-only and single-line only. */
     Mock_Reset();
     s_mock.mock_jedec_id = 0x9D4018U;             /* ISSI: no vendor row */
-    assert(Flash_Init() != FLASH_OK);
-    assert(Flash_GetState() == FLASH_STATE_ERROR);
-    printf("  - Free density 0xC86018 resolves, unknown vendor 0x9D4018 refused. PASSED.\n\n");
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_GetState() == FLASH_STATE_READY);
+    assert((Flash_GetInfo()->features & FLASH_FEAT_GENERIC) != 0U);
+    assert(Flash_GetInfo()->flash_size == 16UL * 1024UL * 1024UL);
+    printf("  - Free density 0xC86018 resolves, unknown vendor 0x9D4018 -> generic. PASSED.\n\n");
 }
 
 /******************************************************************************
@@ -2213,6 +2218,150 @@ static void Test_GdWrsrFamilySplit(void)
     printf("  - LQ stays 16-bit at 16 MB; unknown type 0x41 defaults to 8-bit. PASSED.\n\n");
 }
 
+/******************************************************************************
+ * [TEST 36] SW-048: 3단 폴백 tier 2 — table 에 없는 부품 (B안)
+ *
+ *   배경: JEDEC ID 는 답하는데 table 에 없는 부품(신품, 모르는 vendor)을
+ *   "연결 안 됨"으로 떨어뜨리면 보드가 부팅을 멈춘다. tier 2 는 ID 만으로 임시
+ *   profile 을 세우고, 사실을 모르는 기능(write/erase/protect/quad)은 닫아 둔다.
+ *
+ *   이 test 가 증명하는 계약:
+ *     1) 밀도 byte 하나로 profile 이 선다(64 KB ~ 16 MB).
+ *     2) read 는 03h single 뿐이다 — quad 를 요청해도 EBh 가 나가지 않는다.
+ *     3) B안: 옵트인 전 write/erase/status write 는 frame 0 으로 거절된다.
+ *     4) protect/unprotect/QE 는 옵트인 뒤에도 거절된다(bit 위치를 모른다).
+ *     5) FLASH_INIT_OPT_GENERIC_WRITE 로 초기화하면 그때는 write/erase 가 나간다.
+ *     6) 해석 불가 density 는 tier 2 로 받지 않는다(NULL -> UNSUPPORTED).
+ *     7) 16 MB 초과 부품은 앞 16 MB 만 노출되고 범위 밖 주소는 거절된다.
+ ******************************************************************************/
+static void Test_GenericFallback(void)
+{
+    printf("[TEST 36] SW-048: tier-2 generic profile for parts outside the table...\n");
+
+    /* --- 1) lookup 계약: ID 만으로 서는 profile --- */
+    const FLASH_INFO *g = Flash_FindGenericDevice(0x9D4017U);   /* ISSI 8 MB */
+    assert(g != NULL);
+    assert(g->jedec_id == 0x9D4017U);
+    assert(g->model_id == 0x9D4017U);
+    assert(g->flash_size == 8UL * 1024UL * 1024UL);
+    assert(g->addr_bytes == 3U);
+    assert(g->qe_reg == 0U);
+    assert(g->die_count == 1U);
+    assert(g->die_size == 0U);
+    assert((g->features & FLASH_FEAT_GENERIC) != 0U);
+    assert((g->features & FLASH_FEAT_QUAD) == 0U);
+    assert((g->features & FLASH_FEAT_DUAL) == 0U);
+
+    /* 여섯 read mode 가 전부 03h / dummy 0 / 1선이어야 한다 */
+    for (int m = 0; m < (int)FLASH_READ_QPI; m++) {
+        assert(g->read_cfg[m].command == F_CMD_READ);
+        assert(g->read_cfg[m].dummy_cycles == 0U);
+        assert(g->read_cfg[m].io_width == 1U);
+    }
+
+    /* 64 KB(0x10) 은 가장 작은 유효 밀도다 */
+    g = Flash_FindGenericDevice(0x9D4010U);
+    assert(g != NULL && g->flash_size == 64UL * 1024UL);
+    printf("  - 0x9D4017 -> 8 MB, 03h-only, generic flag. PASSED.\n");
+
+    /* --- 2) 실제 read: quad 를 요청해도 03h single 로 나간다 --- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0x9D4018U;                 /* ISSI 16 MB */
+    assert(Flash_Init() == FLASH_OK);
+    assert(Flash_GetState() == FLASH_STATE_READY);
+    assert(Flash_GetInfo()->flash_size == 16UL * 1024UL * 1024UL);
+    assert((Flash_GetInfo()->features & FLASH_FEAT_GENERIC) != 0U);
+
+    for (uint32_t i = 0U; i < 8U; i++) {
+        s_mock.config_buf[i] = (uint8_t)(0xA0U + i);
+    }
+    s_mock.config_len = 8U;
+
+    uint8_t buf[8];
+    assert(Flash_Read(0U, buf, 8U, FLASH_READ_QUAD_IO,
+                      FLASH_READ_UNIT_BYTE, FLASH_READ_OPT_NONE) == FLASH_OK);
+    assert(s_xfer.last_first_tx == F_CMD_READ);   /* EBh(0xEB) 가 아니다 */
+    assert(s_xfer.last_tx_len == 4U);             /* cmd + 3-byte address */
+    assert(s_xfer.last_quad_len == 0U);           /* 4선 payload 없음 */
+    assert(memcmp(buf, s_mock.config_buf, sizeof(buf)) == 0);
+    assert(Flash_Read(0U, buf, 8U, FLASH_READ_QPI,
+                      FLASH_READ_UNIT_BYTE, FLASH_READ_OPT_NONE) == FLASH_ERR_UNSUPPORTED);
+    printf("  - quad request still issues 03h single-line, QPI refused. PASSED.\n");
+
+    /* --- 3) B안: 옵트인 전에는 write 계열이 버스로 나가지 않는다 --- */
+    const uint32_t frames_before = s_xfer.frames;
+    const uint8_t page[4] = { 0x11U, 0x22U, 0x33U, 0x44U };
+    assert(Flash_Write(0x100U, page, sizeof(page), FLASH_PROGRAM_SINGLE) == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_Erase(0x1000U, FLASH_ERASE_SECTOR) == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_Erase(0U, FLASH_ERASE_CHIP) == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_WriteStatus(1U, 0x00U) == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_Protect(0x04U) == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_Unprotect() == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_EnableQuad() == FLASH_ERR_UNSUPPORTED);
+    assert(s_xfer.frames == frames_before);       /* WREN 조차 나가지 않았다 */
+    assert(s_mock.wren_count == 0U);
+    printf("  - write/erase/status/protect/QE refused with zero bus frames. PASSED.\n");
+
+    /* --- 4) 옵트인하면 write/erase 는 열리고, protect/QE 는 그대로 닫힌다 --- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0x9D4018U;
+    Mock_SetStatus(0x00U, 0x00U, 0x00U);
+    assert(Flash_InitOpt(FLASH_INIT_OPT_GENERIC_WRITE) == FLASH_OK);
+    assert(g_flash_handle.generic_write == true);
+    assert((Flash_GetInfo()->features & FLASH_FEAT_GENERIC) != 0U);
+
+    assert(Flash_Write(0x100U, page, sizeof(page), FLASH_PROGRAM_SINGLE) == FLASH_OK);
+    assert(s_mock.wren_count > 0U);
+    assert(s_mock.total_bytes_programmed == sizeof(page));
+    assert(Flash_Erase(0x1000U, FLASH_ERASE_SECTOR) == FLASH_OK);
+    assert(Flash_Protect(0x04U) == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_Unprotect() == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_EnableQuad() == FLASH_ERR_UNSUPPORTED);
+    printf("  - opt-in opens write/erase only; protect/QE stay refused. PASSED.\n");
+
+    /* --- 5) 해석 불가한 밀도는 tier 2 가 아니라 error 다 --- */
+    assert(Flash_FindGenericDevice(0x9D4000U) == NULL);   /* density 0 */
+    assert(Flash_FindGenericDevice(0x9D400FU) == NULL);   /* 32 KB: 25-series 아님 */
+    assert(Flash_FindGenericDevice(0x9D40CCU) == NULL);   /* 2^204: bus 잡음 */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0x9D4000U;
+    assert(Flash_Init() == FLASH_ERR_UNSUPPORTED);
+    assert(Flash_GetState() == FLASH_STATE_ERROR);
+    printf("  - nonsense density (0x00/0x0F/0xCC) stays UNSUPPORTED. PASSED.\n");
+
+    /* --- 6) 16 MB 초과 부품은 앞 16 MB 만 노출한다 --- */
+    g = Flash_FindGenericDevice(0x9D4019U);               /* 32 MB part */
+    assert(g != NULL);
+    assert(g->flash_size == 16UL * 1024UL * 1024UL);
+    assert(g->addr_bytes == 3U);
+
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0x9D4019U;
+    assert(Flash_Init() == FLASH_OK);
+    uint8_t one = 0U;
+    assert(Flash_Read(16UL * 1024UL * 1024UL, &one, 1U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, FLASH_READ_OPT_NONE) == FLASH_ERR_PARAM);
+    assert(Flash_Read((16UL * 1024UL * 1024UL) - 1U, &one, 1U, FLASH_READ_SINGLE,
+                      FLASH_READ_UNIT_BYTE, FLASH_READ_OPT_NONE) == FLASH_OK);
+    printf("  - 32 MB part clamped to 16 MB, boundary address refused. PASSED.\n");
+
+    /* --- 7) 부팅 경로도 같은 폴백을 쓴다. 단, config 가 기대한 제품군과 실제
+     *        응답이 다르면 여전히 거절된다(6단계 Flash_FamilyMatch). --- */
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0x9D4018U;
+    Mock_SetBootConfig(0x9D4018U, SFC_DEFAULT_PAGE_SIZE_4K, 0U);
+    assert(Flash_BootInit(0x00000000U) == FLASH_OK);
+    assert(Flash_GetState() == FLASH_STATE_READY);
+    assert((Flash_GetInfo()->features & FLASH_FEAT_GENERIC) != 0U);
+    assert(g_flash_handle.locked == true);
+
+    Mock_Reset();
+    s_mock.mock_jedec_id = 0x9D4018U;                        /* 실제 0x9D40xx */
+    Mock_SetBootConfig(0x9D4118U, SFC_DEFAULT_PAGE_SIZE_4K, 0U);  /* 기대 0x9D41xx */
+    assert(Flash_BootInit(0x00000000U) == FLASH_ERR_UNSUPPORTED);
+    printf("  - boot path falls back too, but family mismatch is still refused. PASSED.\n\n");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0); /* unbuffered: show progress even on assert */
@@ -2256,9 +2405,10 @@ int main(void)
     Test_AddressRangeRefused();
     Test_Sr3AddressMode();
     Test_GdWrsrFamilySplit();
+    Test_GenericFallback();
 
     printf("================================================================\n");
-    printf(" ALL 35 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
+    printf(" ALL 36 VERIFICATION TEST SUITES PASSED SUCCESSFULLY (100%%)!\n");
     printf("================================================================\n");
 
     return 0;

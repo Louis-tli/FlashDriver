@@ -362,6 +362,29 @@ static int Flash_CheckConnect(void)
 }
 
 /******************************************************************************
+ * Helper (SW-048, B안): table 밖(generic) 부품의 write/erase 문지기
+ *
+ *   generic profile 은 지우기 단위도, BP bit 위치도, page 크기도 모른다.
+ *   그래서 기본은 읽기 전용이다. 사실을 아는 쪽(호출자)이
+ *   Flash_InitOpt(FLASH_INIT_OPT_GENERIC_WRITE) 로 명시적으로 열었을 때만
+ *   write/erase 를 통과시킨다.
+ *
+ *   info == NULL 이면 여기서 판단하지 않는다: 그 경우는 각 API 의 기존
+ *   PARAM/NO_CONNECT 검사가 이미 거절한다.
+ ******************************************************************************/
+static int Flash_GenericWriteGate(void)
+{
+    const FLASH_INFO *info = g_flash_handle.info;
+
+    if ((info != NULL) &&
+        ((info->features & FLASH_FEAT_GENERIC) != 0U) &&
+        (g_flash_handle.generic_write == false)) {
+        return FLASH_ERR_UNSUPPORTED;
+    }
+    return FLASH_OK;
+}
+
+/******************************************************************************
  * Helper (SW-017): 공통 bring-up + identification 순서.
  *
  * Flash_BootInitOpt() 와 Flash_InitOpt() 가 이 순서를 각자 복사해 들고 있었다
@@ -410,7 +433,8 @@ static int Flash_ProbeBus(uint32_t options, uint32_t *p_jedec_id)
  ******************************************************************************/
 static int Flash_ApplyHandleConfig(const FLASH_INFO *p_info,
                                    uint8_t cfg_addr_mode,
-                                   FLASH_CRC_ALGO crc_algo)
+                                   FLASH_CRC_ALGO crc_algo,
+                                   uint32_t options)
 {
     g_flash_handle.info        = p_info;
     g_flash_handle.addr_mode   = Flash_ResolveAddrMode(cfg_addr_mode, p_info);
@@ -420,6 +444,10 @@ static int Flash_ApplyHandleConfig(const FLASH_INFO *p_info,
     g_flash_handle.last_crc    = 0U;
     g_flash_handle.sr3         = 0U;
     g_flash_handle.sr3_valid   = false;
+    /* SW-048(B안): table 밖 부품의 write/erase 는 여기서 열린다. 옵션을 주지
+     * 않았으면 false 로 남아 읽기 전용이 된다 — 이 값은 나중에 바뀌지 않는다
+     * (init 때 한 번 정하고, 부팅 뒤 lock 된다). */
+    g_flash_handle.generic_write = ((options & FLASH_INIT_OPT_GENERIC_WRITE) != 0U);
 
     /* SW-042: 4-Byte 부품은 3-Byte mode 로 구동할 수 없다.
      *
@@ -493,6 +521,12 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
         p_info = Flash_FindDevice(cfg.jedec_expect);
     }
     if (p_info == NULL) {
+        /* SW-048 tier-2: config 가 가리키는 부품이 table 에 없으면, 그 ID 로
+         * 임시 generic profile 을 만든다. 아래 6단계 제품군 검사는 그대로
+         * 살아 있으므로, 실제 부품과 기대 ID 가 다르면 여전히 거절된다. */
+        p_info = Flash_FindGenericDevice(cfg.jedec_expect);
+    }
+    if (p_info == NULL) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
     }
@@ -514,7 +548,7 @@ int Flash_BootInitOpt(uint32_t config_addr, uint32_t options)
     /* 8. Configure the handle + every die (QE / 4-byte mode) */
     const FLASH_CRC_ALGO crc_algo = (cfg.crc_algo < (uint8_t)FLASH_CRC_ALGO_MAX)
                                     ? (FLASH_CRC_ALGO)cfg.crc_algo : FLASH_CRC32;
-    status = Flash_ApplyHandleConfig(p_info, cfg.addr_mode, crc_algo);
+    status = Flash_ApplyHandleConfig(p_info, cfg.addr_mode, crc_algo, options);
     if (status != FLASH_OK) {
         return status;
     }
@@ -556,15 +590,22 @@ int Flash_InitOpt(uint32_t options)
         return status;
     }
 
-    /* 2. Look the ID up in the model table (exact match only) */
+    /* 2. Look the ID up in the model table (exact match first, **tier 1**) */
     const FLASH_INFO *p_info = Flash_FindDevice(jedec_id);
+    if (p_info == NULL) {
+        /* SW-048 tier-2: 표에 없어도 9Fh 에 답한 부품이면 버리지 않는다.
+         * 읽기 전용 generic profile 로 READY 까지 간다. 밀도 byte 가
+         * 해석 불가(0x10..0x1F 밖)면 NULL 이 그대로 남아 아래에서 거절된다. */
+        p_info = Flash_FindGenericDevice(jedec_id);
+    }
     if (p_info == NULL) {
         g_flash_handle.state = FLASH_STATE_ERROR;
         return FLASH_ERR_UNSUPPORTED;
     }
 
     /* 3. Configure the handle + every die, then go READY */
-    status = Flash_ApplyHandleConfig(p_info, (uint8_t)FLASH_ADDR_MODE_DEFAULT, FLASH_CRC32);
+    status = Flash_ApplyHandleConfig(p_info, (uint8_t)FLASH_ADDR_MODE_DEFAULT,
+                                     FLASH_CRC32, options);
     if (status != FLASH_OK) {
         return status;
     }
@@ -946,6 +987,13 @@ static int Flash_WriteStatusEx(uint8_t reg_idx, uint8_t val, FLASH_SR_WRITE_MODE
  ******************************************************************************/
 int Flash_WriteStatus(uint8_t reg_idx, uint8_t val)
 {
+    /* SW-048(B안): generic 부품은 SR 배치를 모른다. 옵트인 전에는 status
+     * write 도 막는다 — QE/BP bit 를 엉뚱한 자리에 쓰면 되돌릴 수 없다. */
+    const int gate = Flash_GenericWriteGate();
+    if (gate != FLASH_OK) {
+        return gate;
+    }
+
     return Flash_WriteStatusEx(reg_idx, val, FLASH_SR_WRITE_VOLATILE);
 }
 
@@ -994,6 +1042,13 @@ static int Flash_WriteBlockProtect(uint8_t bp_mask)
 
     if (info == NULL) {
         return FLASH_ERR_PARAM;
+    }
+
+    /* SW-048: generic 부품의 Protect/Unprotect 는 옵트인과 무관하게 언제나
+     * 거절한다. BP bit 가 SR1 의 어디에 있는지, 몇 bit 인지 모르는 상태에서
+     * "보호를 걸었다"고 믿게 만드는 것이 가장 위험한 거짓말이기 때문이다. */
+    if ((info->features & FLASH_FEAT_GENERIC) != 0U) {
+        return FLASH_ERR_UNSUPPORTED;
     }
 
     /* snapshot 전에 부품을 먼저 안정시킨다(SW-035). SR1 을 읽어 고쳐 쓰는 사이에
@@ -1077,6 +1132,13 @@ int Flash_EnableQuad(void)
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
         return FLASH_ERR_PARAM;
+    }
+
+    /* SW-048: generic 부품은 QE bit 위치를 모른다. qe_reg == 0 이라 아래
+     * "QE 없음" 경로로 흘러 조용히 성공한 것처럼 보이면 안 된다 — quad
+     * opcode 를 보낼 수 없다는 사실을 호출자에게 분명히 알린다. */
+    if ((info->features & FLASH_FEAT_GENERIC) != 0U) {
+        return FLASH_ERR_UNSUPPORTED;
     }
 
     if (info->qe_reg == 0U) {
@@ -1326,6 +1388,13 @@ int Flash_Write(uint32_t addr, const void *buf, uint32_t len,
         return FLASH_ERR_PARAM;
     }
 
+    /* SW-048(B안): table 밖 부품은 옵트인 전까지 쓰기를 거절한다. 버스로
+     * 나가는 command 가 하나도 없도록 WREN 보다 앞에서 막는다. */
+    const int gate = Flash_GenericWriteGate();
+    if (gate != FLASH_OK) {
+        return gate;
+    }
+
     /* 버스 트래픽이 발생하기 전에 쓰기 작업을 막아야 한다. 
      * 허용 ​​범위를 초과하는 주소를 지정한 프로그래밍 명령은 (주소 래핑 현상에 의해) 배열의 시작 부분에 적용되어 버리는데, 
      * 이것이 바로 부트로더가 파괴되는 원인이다.*/
@@ -1408,6 +1477,12 @@ int Flash_Erase(uint32_t addr, FLASH_ERASE_MODE mode)
     const FLASH_INFO *info = g_flash_handle.info;
     if (info == NULL) {
         return FLASH_ERR_PARAM;
+    }
+
+    /* SW-048(B안): generic 부품은 chip/sector erase 모두 옵트인 전 거절. */
+    int gate = Flash_GenericWriteGate();
+    if (gate != FLASH_OK) {
+        return gate;
     }
 
     /* Full Chip Erase 처리.

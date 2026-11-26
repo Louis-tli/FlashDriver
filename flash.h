@@ -141,6 +141,10 @@ typedef enum
  ******************************************************************************/
 #define FLASH_INIT_OPT_NONE             (0x00000000U)
 #define FLASH_INIT_OPT_NO_RESET         (0x00000001U)   /* Skip SW reset (fast boot) */
+/* SW-048 (tier-2 generic, B안): table 에 없는 부품에 write/erase 를 허용한다.
+ * 기본값은 읽기 전용이다 — 지우기 단위와 BP bit 위치를 모르는 부품에 erase 를
+ * 보내면 되돌릴 수 없기 때문이다. 읽기는 이 옵션 없이도 언제나 된다. */
+#define FLASH_INIT_OPT_GENERIC_WRITE    (0x00000002U)
 
 /******************************************************************************
  * Common Standard SPI NOR Flash Command Opcodes
@@ -234,12 +238,18 @@ typedef enum
 #define FLASH_FEAT_DUAL                 (1U << 0)
 #define FLASH_FEAT_QUAD                 (1U << 1)
 #define FLASH_FEAT_4BYTE_ADDR           (1U << 2)
-/* (bit 3 retired - SW-044) 예전에 이 자리에 FLASH_FEAT_MULTI_DIE flag 가 있었다.
- * 그것은 table 이 이미 채워 주는 숫자를 두 번째로 복사한 것이었다:
- * FLASH_INFO.die_count / die_size. 같은 사실의 출처가 둘이면 어긋날 수 있다 —
- * 새 2-die 부품이 die_count = 2 를 넣고 bit 는 잊으면, write 가 clamp 없이 die
- * 경계를 넘어간다. bit 번호를 다시 매기면(4..7) table 만 소란스러워지므로, 그
- * bit 는 미사용으로 남긴다. */
+/* bit 3 은 퇴역하지 않았다 — SW-048 에서 FLASH_FEAT_GENERIC 이 다시 쓴다.
+ * 예전의 FLASH_FEAT_MULTI_DIE 는 SW-044 에서 사라졌다: 그것은 table 이 이미
+ * 채워 주는 숫자를 두 번째로 복사한 것이라, 같은 사실의 출처가 둘이면
+ * 어긋날 수 있었다(die_count / die_size 가 유일한 출처다).
+ *
+ *   FLASH_FEAT_GENERIC = 이 부품은 table 에 없다. JEDEC ID 만 보고 만든 임시
+ *   profile 이라는 표식이다. 그래서 이 비트가 서 있으면 driver 는
+ *     - quad/dual opcode 를 보내지 않고 03h single 로만 읽고,
+ *     - Protect/Unprotect/QE 를 거절하며(BP·QE 위치를 모른다),
+ *     - write/erase 는 Flash_InitOpt(FLASH_INIT_OPT_GENERIC_WRITE) 로
+ *       명시적으로 열기 전까지 거절한다. */
+#define FLASH_FEAT_GENERIC              (1U << 3)
 #define FLASH_FEAT_STATUS_2BYTE_WRITE   (1U << 4)   /* 01h frame 하나가 SR1 과 SR2 를 함께 쓴다(GigaDevice GD25LQ 계열만: 16 bit 필수, 8 bit 면 SR2 가 소거됨 - SW-043) */
 #define FLASH_FEAT_VSR_WREN             (1U << 5)   /* Supports 50h Volatile SR Write Enable */
 #define FLASH_FEAT_BP4                  (1U << 6)   /* SR1 bit6 은 5번째 block-protect bit 이고 quad-enable bit 이 아니다 */
@@ -392,6 +402,7 @@ typedef struct
     bool                qe_enabled;         /* True if QE is verified enabled */
     uint16_t            sfc_page_size;      /* SFC DMA page size: 2048 or 4096 */
     bool                locked;             /* Selection locked after boot (immutable) */
+    bool                generic_write;      /* SW-048: table 밖 부품에 write/erase 허용 (기본 false) */
     uint32_t            last_crc;           /* Accumulated CRC of last Flash_Read */
     uint8_t             sr3;                /* Last Status Register-3 read (SW-042) */
     bool                sr3_valid;          /* True once a die has answered 15h */

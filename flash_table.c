@@ -93,6 +93,24 @@ static const FLASH_READ_CFG s_readcmd_gd6[FLASH_READ_MODE_MAX] = {
 };
 
 
+/* generic(3단 폴백 tier 2, SW-048): table 에 없는 부품용 최소 read profile.
+ *
+ *   여섯 mode 를 전부 03h single-line 으로 되돌린다. 이것이 정직한 이유:
+ *   이 부품의 dummy cycle 수도, mode byte 규칙도 모르므로 EBh/BBh 같은
+ *   opcode 를 보내면 data 가 한 byte 씩 밀려서 돌아온다 — error 없이 틀린
+ *   값을 받는 것이 가장 나쁜 결과다. 03h 는 25-series 어디서나 "주소만 주면
+ *   그대로 읽어라"라는 같은 뜻이고 dummy 가 0 이다.
+ *
+ *   따라서 quad/dual 을 요청해도 선로는 single 로 나간다: 느리지만 맞다. */
+static const FLASH_READ_CFG s_readcmd_generic[FLASH_READ_MODE_MAX] = {
+    [FLASH_READ_SINGLE]  = RC_SINGLE,
+    [FLASH_READ_FAST]    = RC_SINGLE,
+    [FLASH_READ_DUAL]    = RC_SINGLE,
+    [FLASH_READ_DUAL_IO] = RC_SINGLE,
+    [FLASH_READ_QUAD]    = RC_SINGLE,
+    [FLASH_READ_QUAD_IO] = RC_SINGLE
+};
+
 /******************************************************************************
  * Vendor information
  *
@@ -319,4 +337,57 @@ const FLASH_INFO *Flash_FindDeviceByModel(FLASH_MODEL model_id)
         return NULL;
     }
     return Flash_FindDevice((uint32_t)model_id);
+}
+
+/******************************************************************************
+ * Tier-2 Fallback: table 에 없는 부품 (SW-048)
+ *
+ *   JEDEC ID 는 답하는데 table 에 없는 부품(신품, 모르는 vendor, 표기 오류)을
+ *   "연결 안 됨"으로 떨어뜨리면 보드가 부팅을 멈춘다. 그 대신 이 함수가 ID 만
+ *   보고 임시 profile 을 하나 만든다. 지어내는 것은 밀도 하나뿐이고, 나머지는
+ *   전부 "모른다"로 남긴다:
+ *
+ *     - size     : 밀도 byte 를 1UL << n 으로 해석한다. 25-series 는 모두 이
+ *                  규칙을 쓰므로 vendor 를 몰라도 통한다.
+ *     - 16 MB 초과분: 이 driver 에는 4-byte 주소 경로가 없으므로 앞 16 MB 만
+ *                  노출한다. 범위를 넘는 주소는 Flash_CheckRange() 가 거절한다
+ *                  (조용히 wrap 되는 것보다 낫다).
+ *     - QE       : 위치를 모르므로 qe_reg = 0. quad 를 켜지 않는다.
+ *     - read     : 03h single 만. dummy cycle 수를 모르는 opcode 는 보내지 않는다.
+ *     - write    : Flash_InitOpt(FLASH_INIT_OPT_GENERIC_WRITE) 로 옵트인해야 열린다.
+ *     - protect  : 언제나 거절한다(BP bit 위치를 모른다).
+ *
+ *   밀도 byte 가 0x10..0x1F 밖이면 NULL 이다. 그것은 "모르는 부품"이 아니라
+ *   "이상한 응답"이므로 tier-2 로 받아 주면 안 된다(예: bus 잡음 0xAABBCC).
+ ******************************************************************************/
+const FLASH_INFO *Flash_FindGenericDevice(uint32_t jedec_id)
+{
+    jedec_id &= FLASH_JEDEC_MASK;
+
+    const uint32_t density = jedec_id & 0xFFU;
+    if ((density < 0x10U) || (density > 0x1FU)) {
+        return NULL;
+    }
+
+    /* 0x10 = 64 KB (1<<16) ... 0x1F = 2 GB (1<<31). 2 GB 는 아래에서 잘린다. */
+    uint32_t size = 1UL << density;
+    if (size > FLASH_SIZE_16MB) {
+        size = FLASH_SIZE_16MB;
+    }
+
+    /* SW-039: 구조체는 필요한 field 만 대입한다. s_device 는 static 이라 나머지는
+     * 이미 0 이지만, 나중에 field 가 늘어도 이 함수가 조용히 옛 값을 물려주지
+     * 않도록 여기서 쓰는 것만 명시한다. */
+    s_device.jedec_id   = jedec_id;
+    s_device.model_id   = jedec_id;     /* table 에 없으므로 ID 자체가 이름이다 */
+    s_device.flash_size = size;
+    s_device.addr_bytes = 3U;           /* 3-byte 주소만 쓴다 */
+    s_device.qe_reg     = 0U;           /* QE 위치를 모른다 -> quad 없음 */
+    s_device.qe_bit     = 0U;
+    s_device.features   = (uint8_t)FLASH_FEAT_GENERIC;
+    s_device.die_count  = 1U;
+    s_device.die_size   = 0U;           /* die 경계를 모른다 -> 0 (경계 없음) */
+    s_device.read_cfg   = s_readcmd_generic;
+
+    return &s_device;
 }

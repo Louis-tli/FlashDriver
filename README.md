@@ -979,3 +979,81 @@ mask 범위를 `0x20`으로 좁힌 이유는, `0xE0`까지만 넓히면 정체�
   부팅 지연 A안(tPUW 5 ms)을 넣으면 함께 덮입니다 — 아직 미승인 상태입니다.
 - MX25U 계열의 BP 폭은 이번 문서로 **4 bit / BP4 없음**이 확인되었습니다. SW-046의
   "Macronix 3-bit/4-bit 혼재" 항목 중 1.8V 계열은 이제 확정입니다(3V MX25L은 미확인 유지).
+
+---
+
+## SW-048 — table에 없는 부품: 3단 폴백 tier 2 (B안, 2026-11-26)
+
+### 문제
+
+지금까지 driver는 세상의 부품을 두 종류로만 봤습니다.
+
+1. table 에 있는 부품 → 정상 동작
+2. table 에 없는 부품 → `FLASH_ERR_UNSUPPORTED` → **부팅 정지**
+
+문제는 2번입니다. 9Fh 에 정상적으로 답하는 부품은 **존재하는 부품**입니다. 우리가 그
+행을 아직 안 적었을 뿐인데, 그 이유로 보드를 멈추는 것은 과합니다. 반대로 아무 부품이나
+받아 주면 정체 미상의 부품에 erase 를 보내 **되돌릴 수 없는 손실**을 만들 수 있습니다.
+
+그래서 폴백을 3단으로 나눴습니다.
+
+| 단계 | 조건 | 결과 | 기능 |
+|---|---|---|---|
+| T1 | table 에 있음 | READY | 전부 |
+| T2 | table 에 없지만 ID 가 해석됨 | READY (읽기 전용) | 03h read + 옵트인 시 write/erase |
+| T3 | 무응답(`00 00 00` / `FF FF FF`) | `FLASH_ERR_NO_CONNECT` | 없음 |
+
+### 근거
+
+- 25-series 는 vendor 와 무관하게 **density byte = log2(용량)** 규칙을 씁니다
+  (0x18 = 2^24 = 16 MB). 그래서 vendor 를 몰라도 용량 하나는 정직하게 계산됩니다.
+- 반대로 **dummy cycle 수와 QE/BP bit 위치는 vendor·계열마다 다릅니다.** 이것을
+  모르는 채 `EBh` 를 보내면 data 가 한 byte 씩 밀려서 **error 없이 틀린 값**이
+  돌아옵니다. 가장 나쁜 종류의 실패이므로 T2 는 `03h` 만 씁니다.
+
+### 변경
+
+| 위치 | 내용 |
+|---|---|
+| `flash.h` | `FLASH_INIT_OPT_GENERIC_WRITE = 0x2` 옵션, `FLASH_FEAT_GENERIC = 1<<3`, `FLASH_HANDLE.generic_write` |
+| `flash_table.c` | `Flash_FindGenericDevice()` + `s_readcmd_generic` (여섯 mode 전부 03h/1선) |
+| `flash.c` | `Flash_BootInitOpt`/`Flash_InitOpt` 폴백, `Flash_ApplyHandleConfig(options)`, `Flash_GenericWriteGate()` 를 Write/Erase/WriteStatus 진입에, Protect/Unprotect/EnableQuad 는 무조건 거절 |
+| `test_flash.c` | TEST 36 (7개 절) + `Mock_Reset()` 에 `generic_write` 초기화 |
+
+핵심 계약 세 가지:
+
+1. **기본은 읽기 전용.** `FLASH_INIT_OPT_GENERIC_WRITE` 를 준 호출자만 write/erase 를
+   얻습니다. 옵트인하지 않으면 거절은 **버스 frame 0** 으로 끝납니다(WREN 조차 안 나감).
+2. **Protect/Unprotect/QE 는 옵트인 뒤에도 거절.** BP/QE 위치를 모르는 상태에서
+   "보호했다"고 믿게 만드는 것이 더 위험합니다.
+3. **해석 불가 density 는 T2 가 아니다.** `0x10..0x1F` 밖(0x00, 0xCC …)은 bus 잡음이나
+   다른 계열이므로 `NULL` → `FLASH_ERR_UNSUPPORTED` 로 남깁니다.
+
+16 MB 를 넘는 부품은 **앞 16 MB 만** 노출합니다(이 driver 에 4-byte 주소 경로가 없음).
+범위 밖 주소는 `Flash_CheckRange()` 가 `FLASH_ERR_PARAM` 으로 거절합니다.
+
+### 결과
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **36/36 PASS**, PASSED 70, FAILED 0 |
+| 빌드 경고 | **0** (`-Wall -Wextra -pedantic`) |
+| strict 게이트 (24옵션) | 신규 **0** (기존 `flash_table.c` 3건만 유지) |
+| ROM (`-Oz`, Cortex-M0) | 5,586 → **5,880 B (+294 B, +5.3%)** — `scripts/rom_delta.sh HEAD` |
+| ROM (`-Os`, 같은 트리) | 5,916 → 6,190 B (+274 B) |
+| RAM | **0 B** (`.bss` 96 → 96) |
+| 신규 공개 동작 | `Flash_InitOpt(FLASH_INIT_OPT_GENERIC_WRITE)`, `FLASH_FEAT_GENERIC` |
+
+ROM 증가분은 예상(+180~250 B)보다 조금 큽니다. `s_readcmd_generic` 이 6×12 = 72 B 를
+차지하고, 폴백 분기와 gate 함수가 나머지입니다. 그래도 6 KB 미만입니다.
+
+### 남는 것
+
+- T2 는 page 256 B / sector 4 KB / block 64 KiB 를 **관행으로 가정**합니다. 25-series
+  전반에 성립하지만 원문으로 확인한 것은 아닙니다. 옵트인 write 를 실사용할 부품은
+  결국 table 에 정식 등재하는 편이 맞습니다.
+- **vendor 가 density 상위 bit 를 계열 표시로 쓰는 부품(MX25U 1.8V, 0x30+n)은 T2 로
+  해석되지 않습니다.** vendor 를 모르니 그 규칙을 적용할 근거가 없기 때문입니다.
+  이들은 vendor 행이 있으므로 T1 경로(SW-047)로 들어옵니다.
+- SFDP 를 읽어 geometry 를 스스로 알아내는 경로는 아직 없습니다. T2 를 "읽기 전용"에서
+  "정확한 쓰기"로 올리려면 SFDP(9Fh 대신 5Ah)가 다음 후보입니다.
